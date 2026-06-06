@@ -87,32 +87,43 @@ elif page == "🏆 成果展示":
         st.divider()
 
 # 报告中心页
+# 报告中心页
 elif page == "📄 报告中心":
     st.title("📄 报告中心")
 
+    pdf_files = sorted(glob.glob("data/*.pdf"), reverse=True)
+
     if not pdf_files:
-        st.info("还没有 PDF 报告，请上传至 data/reports/ 文件夹。")
+        st.info("还没有 PDF 报告，请上传至 data/ 文件夹。")
     else:
-        # 左侧选择报告，右侧展示
-        col1, col2 = st.columns([1, 3])
+        # 搜索框
+        search = st.text_input("搜索报告", placeholder="输入平台名或关键词...")
 
-        with col1:
-            st.subheader("报告列表")
-            file_names = [os.path.basename(p) for p in pdf_files]
-            selected = st.radio("选择报告", file_names, label_visibility="collapsed")
+        filtered_pdfs = [p for p in pdf_files
+                         if search.lower() in os.path.basename(p).lower()] if search else pdf_files
 
-        with col2:
-            selected_path = f"data/{selected}"
-            st.subheader(selected.replace(".pdf", "").replace("_", " "))
+        st.caption(f"共 {len(filtered_pdfs)} 份报告")
+        st.divider()
 
-            # # 下载按钮
-            # with open(selected_path, "rb") as f:
-            #     st.download_button(
-            #         label="下载 PDF",
-            #         data=f,
-            #         file_name=selected,
-            #         mime="application/pdf"
-            #     )
+        # 每行两个卡片
+        cols = st.columns(2)
+        for i, path in enumerate(filtered_pdfs):
+            name = os.path.basename(path)
+            display = name.replace(".pdf", "").replace("_", " ")
 
-            # 内嵌预览
-            show_pdf(selected_path)
+            # 猜测平台标签（根据文件名前缀）
+            platforms = ["sol777","A7X","Afun","Lucro","oro7x","Wey7","Soluno","3bet"]
+            tag = next((p for p in platforms if name.startswith(p)), "其他")
+
+            with cols[i % 2]:
+                with st.container(border=True):
+                    st.markdown(f"**{display}**")
+                    st.caption(f"平台：{tag}")
+                    with open(path, "rb") as f:
+                        st.download_button(
+                            label="⬇️ 下载",
+                            data=f.read(),
+                            file_name=name,
+                            mime="application/pdf",
+                            key=f"dl_{i}"
+                        )
