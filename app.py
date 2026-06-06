@@ -22,15 +22,21 @@ def parse_note(path):
 
 def show_pdf(path):
     with open(path, "rb") as f:
-        base64_pdf = base64.b64encode(f.read()).decode("utf-8")
-    pdf_display = f"""
-        <iframe
-            src="data:application/pdf;base64,{base64_pdf}"
-            width="100%" height="700px"
-            style="border: none; border-radius: 8px;">
-        </iframe>
-    """
-    st.components.v1.html(pdf_display, height=720)
+        pdf_bytes = f.read()
+    st.download_button(
+        label="⬇️ 下载 PDF",
+        data=pdf_bytes,
+        file_name=os.path.basename(path),
+        mime="application/pdf"
+    )
+    # 用原生 PDF viewer
+    import base64
+    b64 = base64.b64encode(pdf_bytes).decode()
+    st.markdown(
+        f'<embed src="data:application/pdf;base64,{b64}" '
+        f'width="100%" height="700" type="application/pdf">',
+        unsafe_allow_html=True
+    )
 
 notes_data = sorted(
     [parse_note(p) for p in glob.glob("data/notes/*.md")],
@@ -99,14 +105,14 @@ elif page == "📄 报告中心":
             selected_path = f"data/{selected}"
             st.subheader(selected.replace(".pdf", "").replace("_", " "))
 
-            # 下载按钮
-            with open(selected_path, "rb") as f:
-                st.download_button(
-                    label="下载 PDF",
-                    data=f,
-                    file_name=selected,
-                    mime="application/pdf"
-                )
+            # # 下载按钮
+            # with open(selected_path, "rb") as f:
+            #     st.download_button(
+            #         label="下载 PDF",
+            #         data=f,
+            #         file_name=selected,
+            #         mime="application/pdf"
+            #     )
 
             # 内嵌预览
             show_pdf(selected_path)
