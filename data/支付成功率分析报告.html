@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>支付成功率分析报告 20260523-20260529</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:#f5f5f3;color:#1a1a18;padding:2rem;font-size:14px;line-height:1.6}
+  .page{max-width:960px;margin:0 auto;background:#fff;border-radius:12px;padding:2rem 2.5rem;box-shadow:0 1px 4px rgba(0,0,0,.08)}
+  h1{font-size:20px;font-weight:600;margin-bottom:4px}
+  .report-meta{font-size:12px;color:#888;margin-bottom:1.5rem}
+  .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:1.5rem}
+  .metric{background:#f5f5f3;border-radius:8px;padding:.85rem 1rem}
+  .metric-label{font-size:11px;color:#888;margin-bottom:4px}
+  .metric-val{font-size:20px;font-weight:600;color:#1a1a18}
+  .metric-val.down{color:#a32d2d}
+  .metric-val.up{color:#0F6E56}
+  .section{border-top:1px solid #eee;padding:1.25rem 0 .5rem;margin-bottom:.25rem}
+  .section-num{display:inline-block;background:#185FA5;color:#fff;font-size:11px;font-weight:600;border-radius:4px;padding:1px 7px;margin-right:6px}
+  .section-title{font-size:14px;font-weight:600;color:#1a1a18;margin-bottom:4px;display:flex;align-items:center}
+  .section-sub{font-size:12px;color:#666;margin-bottom:14px}
+  .legend{display:flex;flex-wrap:wrap;gap:14px;margin-bottom:8px;font-size:11px;color:#555}
+  .legend-item{display:flex;align-items:center;gap:5px}
+  .legend-dot{width:10px;height:10px;border-radius:2px;flex-shrink:0}
+  .chart-wrap{position:relative;width:100%}
+  .split{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px}
+  .alert-box{border-radius:8px;padding:.75rem 1rem}
+  .alert-red{background:#fcebeb;border-left:3px solid #E24B4A}
+  .alert-amber{background:#faeeda;border-left:3px solid #BA7517}
+  .alert-label{font-size:11px;font-weight:600;margin-bottom:3px}
+  .alert-val{font-size:17px;font-weight:600;margin:0}
+  .alert-note{font-size:11px;margin-top:3px;opacity:.75}
+  .key-finding{background:#f0f7ff;border-left:3px solid #185FA5;border-radius:0 6px 6px 0;padding:.6rem 1rem;margin-bottom:8px;font-size:12px;color:#0C447C}
+  .key-finding strong{font-weight:600}
+  .footer{font-size:11px;color:#aaa;margin-top:2rem;padding-top:1rem;border-top:1px solid #eee;text-align:center}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <h1>支付成功率分析报告</h1>
+  <p class="report-meta">数据区间：2026-05-23 ~ 2026-05-29 &nbsp;|&nbsp; 支付成功率 = 充值成功事件总次数 / 创建充值订单事件数</p>
+
+  <div class="metrics">
+    <div class="metric"><p class="metric-label">7日均值</p><p class="metric-val">77.0%</p></div>
+    <div class="metric"><p class="metric-label">23日峰值</p><p class="metric-val up">80.4%</p></div>
+    <div class="metric"><p class="metric-label">29日最低</p><p class="metric-val down">71.3%</p></div>
+    <div class="metric"><p class="metric-label">7日累计跌幅</p><p class="metric-val down">−9.1 pct</p></div>
+  </div>
+
+  <!-- 1. 整体趋势 -->
+  <div class="section">
+    <p class="section-title"><span class="section-num">①</span>近7天整体支付成功率趋势</p>
+    <p class="section-sub">观察成功率走势与每日创建订单量变化；29日订单量创7日新高（5,363单）但成功率跌至最低</p>
+    <div class="legend">
+      <span class="legend-item"><span class="legend-dot" style="background:#185FA5"></span>成功率（左轴）</span>
+      <span class="legend-item"><span class="legend-dot" style="background:rgba(24,95,165,0.18)"></span>创建订单量（右轴）</span>
+    </div>
+    <div class="chart-wrap" style="height:250px"><canvas id="c1"></canvas></div>
+  </div>
+
+  <!-- 2. 马甲包对比 -->
+  <div class="section">
+    <p class="section-title"><span class="section-num">②</span>马甲包 vs 非马甲包：成功率 & 流量占比</p>
+    <p class="section-sub">马甲包成功率稳定在55-65%，非马甲包76-84%，差距约18-27pct；马甲包流量占比从5/23的15%持续升至5/29的41%</p>
+    <div class="legend">
+      <span class="legend-item"><span class="legend-dot" style="background:#0F6E56"></span>非马甲包成功率（左轴）</span>
+      <span class="legend-item"><span class="legend-dot" style="background:#E24B4A"></span>马甲包成功率（左轴）</span>
+      <span class="legend-item"><span class="legend-dot" style="background:rgba(186,117,23,0.6)"></span>马甲包流量占比（右轴）</span>
+    </div>
+    <div class="chart-wrap" style="height:250px"><canvas id="c2"></canvas></div>
+  </div>
+
+  <!-- 3. 归因拆解 -->
+  <div class="section">
+    <p class="section-title"><span class="section-num">③</span>28→29日下降 −3.67pct 归因拆解</p>
+    <p class="section-sub">将整体成功率变化分解为"结构变化（mix effect）"与"渠道自身成功率变化（rate effect）"两部分</p>
+    <div class="split">
+      <div class="alert-box alert-red">
+        <p class="alert-label" style="color:#791F1F">总下降</p>
+        <p class="alert-val" style="color:#A32D2D">−3.67 pct</p>
+        <p class="alert-note" style="color:#A32D2D">74.96% → 71.28%</p>
+      </div>
+      <div class="alert-box alert-amber">
+        <p class="alert-label" style="color:#633806">结构 mix effect（主因84%）</p>
+        <p class="alert-val" style="color:#854F0B">−3.08 pct</p>
+        <p class="alert-note" style="color:#854F0B">马甲包流量占比升高拖累整体</p>
+      </div>
+      <div class="alert-box" style="background:#faeeda;border-left:3px solid #BA7517">
+        <p class="alert-label" style="color:#633806">成功率 rate effect（次因16%）</p>
+        <p class="alert-val" style="color:#854F0B">−0.59 pct</p>
+        <p class="alert-note" style="color:#854F0B">渠道自身成功率小幅恶化</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- 4. TOP8失败总代 -->
+  <div class="section">
+    <p class="section-title"><span class="section-num">④</span>29日失败单数 TOP 8 总代</p>
+    <p class="section-sub">TC-马甲包（Tiktok）失败359单，是最大拖累方；代投K-Y版本H5马甲包成功率仅43.7%，为最低</p>
+    <div class="legend">
+      <span class="legend-item"><span class="legend-dot" style="background:#A32D2D"></span>失败单数（左轴，成功率&lt;60%）</span>
+      <span class="legend-item"><span class="legend-dot" style="background:#993C1D"></span>失败单数（左轴，成功率60-69%）</span>
+      <span class="legend-item"><span class="legend-dot" style="background:#BA7517"></span>失败单数（左轴，成功率≥70%）</span>
+      <span class="legend-item"><span class="legend-dot" style="background:#185FA5"></span>成功率%（右轴）</span>
+    </div>
+    <div class="chart-wrap" style="height:270px"><canvas id="c3"></canvas></div>
+  </div>
+
+  <!-- 5. 29日按小时vs其他日均值 -->
+  <div class="section">
+    <p class="section-title"><span class="section-num">⑤</span>29日银行波动：按小时成功率 vs 其他6日均值</p>
+    <p class="section-sub">10-13点成功率显著低于其他6日同时段均值（红色数据点），12点偏差最大达 −27.1pct；14点急速反弹至93.7%（绿色数据点），属短暂银行通道异常</p>
+    <div class="legend">
+      <span class="legend-item"><span class="legend-dot" style="background:#185FA5"></span>29日成功率</span>
+      <span class="legend-item"><span class="legend-dot" style="background:#888780"></span>其他6日均值（虚线）</span>
+      <span class="legend-item"><span class="legend-dot" style="background:#E24B4A;border-radius:50%"></span>波动低谷时间点</span>
+      <span class="legend-item"><span class="legend-dot" style="background:#0F6E56;border-radius:50%"></span>反弹时间点</span>
+    </div>
+    <div class="chart-wrap" style="height:250px"><canvas id="c4"></canvas></div>
+  </div>
+
+  <!-- 6. 各天12-13点对比 -->
+  <div class="section">
+    <p class="section-title"><span class="section-num">⑥</span>各天 12-13点成功率横向对比（银行波动关键时段）</p>
+    <p class="section-sub">29日12点（48.8%）和13点（54.3%）显著低于其他6天同时段水平，其余6天该时段均在70%以上，说明29日中午是偶发异常</p>
+    <div class="legend">
+      <span class="legend-item"><span class="legend-dot" style="background:rgba(24,95,165,0.65)"></span>12点成功率</span>
+      <span class="legend-item"><span class="legend-dot" style="background:rgba(24,95,165,0.35)"></span>13点成功率</span>
+      <span class="legend-item"><span class="legend-dot" style="background:#A32D2D"></span>29日异常（深红）</span>
+    </div>
+    <div class="chart-wrap" style="height:210px"><canvas id="c5"></canvas></div>
+  </div>
+
+  <!-- 7. 偏差分布 -->
+  <div class="section">
+    <p class="section-title"><span class="section-num">⑦</span>29日各小时成功率偏差（29日 − 其他6日均值）</p>
+    <p class="section-sub">10-13点偏差 −12.6 / −16.5 / −27.1 / −24.2pct，集中在中午时段；其他时段偏差多在正常波动范围内（±10pct），14点出现+17.8pct正偏差（补单反弹）</p>
+    <div class="legend">
+      <span class="legend-item"><span class="legend-dot" style="background:#A32D2D"></span>严重偏低（&lt;−20pct）</span>
+      <span class="legend-item"><span class="legend-dot" style="background:#E24B4A"></span>偏低（−10到−20pct）</span>
+      <span class="legend-item"><span class="legend-dot" style="background:rgba(226,75,74,0.5)"></span>略低（0到−10pct）</span>
+      <span class="legend-item"><span class="legend-dot" style="background:rgba(15,110,86,0.6)"></span>正偏差（高于均值）</span>
+    </div>
+    <div class="chart-wrap" style="height:210px"><canvas id="c6"></canvas></div>
+  </div>
+
+  <!-- 关键结论 -->
+  <div class="section">
+    <p class="section-title"><span class="section-num">结</span>关键结论与建议</p>
+    <div style="margin-top:10px">
+      <div class="key-finding"><strong>① 7天整体成功率持续下滑</strong>：从80.4%跌至71.3%（−9.1pct），且下跌有加速趋势，须重点关注。</div>
+      <div class="key-finding"><strong>② 主因是马甲包流量结构性扩张</strong>：马甲包流量占比从15%升至41%，而其成功率低约20pct，28→29日下降中84%由此造成，非银行问题。</div>
+      <div class="key-finding"><strong>③ 29日银行波动属偶发短暂事件</strong>：波动集中在10-13点，12点偏差达−27pct，但14点即恢复至93.7%；估算对全日成功率影响约−1.5pct，相比结构性拖累（−3.08pct）较小。</div>
+      <div class="key-finding"><strong>④ 核心问题渠道</strong>：TC-马甲包（Tiktok）量最大（1176单/天）且成功率仅69.5%；代投K-Y版本H5马甲包成功率长期仅43%，建议优化或缩量。FB-风暴投流单日量从179单暴增至380单，需关注成功率保障。</div>
+    </div>
+  </div>
+
+  <p class="footer">数据来源：事件分析_全量数据_20260523_20260529.csv &nbsp;|&nbsp; 生成时间：2026-05-30</p>
+</div>
+
+<script>
+/* ---- Data ---- */
+const DAYS = ['5/23','5/24','5/25','5/26','5/27','5/28','5/29'];
+const overallRate = [80.39,76.41,79.26,79.97,76.97,74.96,71.28];
+const totalCreate = [4273,3972,4300,4719,4021,4456,5363];
+const nonMajiaRate = [83.74,82.43,84.11,85.01,82.74,80.68,76.32];
+const majiaRate = [61.69,55.28,62.62,64.35,64.93,65.47,64.05];
+const majiaRatio = [15.21,22.18,22.58,24.37,32.40,37.63,41.02];
+
+const top8Names = ['TC-马甲包','Kwai-乐迪','A8-IOS马甲','FB-风暴投流','FB-周无敌','GG-代投K-马甲','代投K-H5马甲','TT-周无敌-马甲'];
+const top8Failed = [359,145,134,125,106,73,67,66];
+const top8Rate = [69.5,77.6,65.2,67.1,80.9,59.9,43.7,59.0];
+
+const hours = Array.from({length:24},(_,i)=>i+'时');
+const d29Rate = [77.08,79.84,66.27,66.67,72.55,73.68,76.23,70.29,76.76,70.39,63.64,62.10,48.78,54.25,93.70,78.71,69.67,71.32,74.25,73.24,69.45,70.21,77.83,81.43];
+const avgOther = [72.96,84.32,82.67,74.29,72.73,69.40,73.29,76.04,79.00,74.60,76.23,78.58,75.90,78.40,75.92,77.84,77.38,75.32,77.13,76.98,81.10,78.76,85.64,77.26];
+const diff24 = d29Rate.map((v,i)=>+(v-avgOther[i]).toFixed(2));
+
+const day1213h12 = [77.21,78.95,78.72,81.58,72.86,66.06,48.78];
+const day1213h13 = [70.75,78.21,88.89,81.36,79.31,71.91,54.25];
+
+/* ---- Inline data-label plugin ---- */
+const datalabelPlugin = {
+  id:'datalabels',
+  afterDatasetsDraw(chart){
+    const {ctx} = chart;
+    chart.data.datasets.forEach((ds,di)=>{
+      if(!ds.showLabels) return;
+      const meta = chart.getDatasetMeta(di);
+      meta.data.forEach((el,i)=>{
+        const val = ds.data[i];
+        if(val===null||val===undefined) return;
+        const pos = el.getCenterPoint ? el.getCenterPoint() : {x:el.x,y:el.y};
+        ctx.save();
+        ctx.font = ds.labelFont||'10px system-ui';
+        ctx.fillStyle = Array.isArray(ds.labelColor) ? ds.labelColor[i] : (ds.labelColor||'#444');
+        ctx.textAlign = 'center';
+        const baseline = Array.isArray(ds.labelBaseline) ? ds.labelBaseline[i] : (ds.labelBaseline||'bottom');
+        ctx.textBaseline = baseline;
+        const offsetArr = Array.isArray(ds.labelOffset) ? ds.labelOffset[i] : ds.labelOffset;
+        const offset = offsetArr !== undefined ? offsetArr : -4;
+        const ly = pos.y + offset;
+        const txt = ds.labelFormat ? ds.labelFormat(val,i) : val;
+        ctx.fillText(txt, pos.x, ly);
+        ctx.restore();
+      });
+    });
+  }
+};
+Chart.register(datalabelPlugin);
+
+const gridColor='rgba(0,0,0,0.06)';
+const tickFont={size:11};
+
+/* ---- Chart 1: Overall trend ---- */
+new Chart(document.getElementById('c1'),{
+  data:{
+    labels:DAYS,
+    datasets:[
+      {
+        type:'bar',label:'创建订单量',data:totalCreate,
+        backgroundColor:'rgba(24,95,165,0.15)',yAxisID:'y2',
+        showLabels:true,labelFont:'9px system-ui',labelColor:'#185FA5',
+        labelBaseline:'bottom',labelOffset:-2,labelFormat:v=>v.toLocaleString()
+      },
+      {
+        type:'line',label:'成功率',data:overallRate,
+        borderColor:'#185FA5',backgroundColor:'rgba(24,95,165,0.06)',
+        tension:0.35,pointRadius:6,pointBackgroundColor:'#185FA5',fill:true,yAxisID:'y',
+        showLabels:true,labelFont:'bold 11px system-ui',labelColor:'#185FA5',
+        labelOffset:-10,labelFormat:v=>v+'%'
+      }
+    ]
+  },
+  options:{
+    responsive:true,maintainAspectRatio:false,
+    plugins:{legend:{display:false}},
+    scales:{
+      y:{min:65,max:85,ticks:{callback:v=>v+'%',font:tickFont},grid:{color:gridColor},title:{display:true,text:'成功率',font:{size:10}}},
+      y2:{position:'right',min:3000,max:6000,ticks:{font:tickFont},grid:{display:false},title:{display:true,text:'订单量',font:{size:10}}}
+    }
+  }
+});
+
+/* ---- Chart 2: Majia vs Non-Majia ---- */
+new Chart(document.getElementById('c2'),{
+  data:{
+    labels:DAYS,
+    datasets:[
+      {
+        type:'bar',label:'马甲包流量占比',data:majiaRatio,
+        backgroundColor:'rgba(186,117,23,0.45)',yAxisID:'y2',
+        showLabels:true,labelFont:'9px system-ui',labelColor:'#854F0B',
+        labelBaseline:'bottom',labelOffset:-2,labelFormat:v=>v+'%'
+      },
+      {
+        type:'line',label:'非马甲包',data:nonMajiaRate,
+        borderColor:'#0F6E56',tension:0.3,pointRadius:5,pointBackgroundColor:'#0F6E56',yAxisID:'y',
+        showLabels:true,labelFont:'bold 10px system-ui',labelColor:'#0F6E56',
+        labelOffset:-10,labelFormat:v=>v+'%'
+      },
+      {
+        type:'line',label:'马甲包',data:majiaRate,
+        borderColor:'#E24B4A',borderDash:[5,3],tension:0.3,pointRadius:5,pointBackgroundColor:'#E24B4A',yAxisID:'y',
+        showLabels:true,labelFont:'bold 10px system-ui',labelColor:'#E24B4A',
+        labelOffset:14,labelBaseline:'top',labelFormat:v=>v+'%'
+      }
+    ]
+  },
+  options:{
+    responsive:true,maintainAspectRatio:false,
+    plugins:{legend:{display:false}},
+    scales:{
+      y:{min:45,max:95,ticks:{callback:v=>v+'%',font:tickFont},grid:{color:gridColor}},
+      y2:{position:'right',min:0,max:60,ticks:{callback:v=>v+'%',font:tickFont},grid:{display:false},title:{display:true,text:'马甲包占比',font:{size:10}}}
+    }
+  }
+});
+
+/* ---- Chart 3: TOP 8 failed agents ---- */
+const barColors3 = top8Rate.map(r=>r<60?'#a32d2d':r<70?'#993C1D':'#BA7517');
+new Chart(document.getElementById('c3'),{
+  data:{
+    labels:top8Names,
+    datasets:[
+      {
+        type:'bar',label:'失败单数',data:top8Failed,
+        backgroundColor:barColors3,yAxisID:'y',
+        showLabels:true,labelFont:'bold 10px system-ui',labelColor:'#333',
+        labelBaseline:'bottom',labelOffset:-2,labelFormat:v=>v
+      },
+      {
+        type:'line',label:'成功率',data:top8Rate,
+        borderColor:'#185FA5',pointRadius:5,pointBackgroundColor:'#185FA5',yAxisID:'y2',
+        showLabels:true,labelFont:'10px system-ui',labelColor:'#185FA5',
+        labelOffset:-10,labelFormat:v=>v+'%'
+      }
+    ]
+  },
+  options:{
+    responsive:true,maintainAspectRatio:false,
+    plugins:{legend:{display:false}},
+    scales:{
+      y:{ticks:{font:tickFont},grid:{color:gridColor},title:{display:true,text:'失败单数',font:{size:10}}},
+      y2:{position:'right',min:0,max:100,ticks:{callback:v=>v+'%',font:tickFont},grid:{display:false},title:{display:true,text:'成功率',font:{size:10}}}
+    }
+  }
+});
+
+/* ---- Chart 4: Hourly 29 vs avg ---- */
+const ptBg4 = d29Rate.map((_,i)=>i>=10&&i<=13?'#E24B4A':i===14?'#0F6E56':'#185FA5');
+const ptRadius4 = d29Rate.map((_,i)=>i>=10&&i<=14?6:3);
+new Chart(document.getElementById('c4'),{
+  data:{
+    labels:hours,
+    datasets:[
+      {
+        type:'line',label:'29日',data:d29Rate,
+        borderColor:'#185FA5',tension:0.2,
+        pointRadius:ptRadius4,pointBackgroundColor:ptBg4,yAxisID:'y',
+        showLabels:true,labelFont:'9px system-ui',
+        labelColor:d29Rate.map((_,i)=>i>=10&&i<=13?'#A32D2D':i===14?'#0F6E56':'#185FA5'),
+        labelOffset:d29Rate.map((_,i)=>i>=10&&i<=13?-12:i===14?-12:-2),
+        labelFormat:v=>v+'%'
+      },
+      {
+        type:'line',label:'其他6日均值',data:avgOther,
+        borderColor:'#aaa',borderDash:[5,3],tension:0.2,pointRadius:2,yAxisID:'y'
+      }
+    ]
+  },
+  options:{
+    responsive:true,maintainAspectRatio:false,
+    plugins:{legend:{display:false}},
+    scales:{
+      y:{min:30,max:100,ticks:{callback:v=>v+'%',font:tickFont},grid:{color:gridColor}},
+      x:{ticks:{font:{size:9},maxRotation:45,autoSkip:false},grid:{display:false}}
+    }
+  }
+});
+
+/* ---- Chart 5: 12-13h comparison by day ---- */
+new Chart(document.getElementById('c5'),{
+  data:{
+    labels:DAYS,
+    datasets:[
+      {
+        type:'bar',label:'12点',data:day1213h12,
+        backgroundColor:DAYS.map((_,i)=>i===6?'#A32D2D':'rgba(24,95,165,0.65)'),
+        showLabels:true,labelFont:'bold 10px system-ui',labelColor:'#333',
+        labelBaseline:'bottom',labelOffset:-2,labelFormat:v=>v+'%'
+      },
+      {
+        type:'bar',label:'13点',data:day1213h13,
+        backgroundColor:DAYS.map((_,i)=>i===6?'#E24B4A':'rgba(24,95,165,0.35)'),
+        showLabels:true,labelFont:'10px system-ui',labelColor:'#555',
+        labelBaseline:'bottom',labelOffset:-2,labelFormat:v=>v+'%'
+      }
+    ]
+  },
+  options:{
+    responsive:true,maintainAspectRatio:false,
+    plugins:{legend:{display:false}},
+    scales:{
+      y:{min:30,max:100,ticks:{callback:v=>v+'%',font:tickFont},grid:{color:gridColor}},
+      x:{ticks:{font:tickFont},grid:{display:false}}
+    }
+  }
+});
+
+/* ---- Chart 6: Hourly diff ---- */
+new Chart(document.getElementById('c6'),{
+  data:{
+    labels:hours,
+    datasets:[{
+      type:'bar',label:'偏差',data:diff24,
+      backgroundColor:diff24.map(v=>v<-20?'#A32D2D':v<-10?'#E24B4A':v<0?'rgba(226,75,74,0.45)':'rgba(15,110,86,0.55)'),
+      showLabels:true,labelFont:'9px system-ui',
+      labelColor:diff24.map(v=>v<-20?'#A32D2D':v<-10?'#993C1D':v<0?'#993C1D':'#0F6E56'),
+      labelOffset:diff24.map(v=>v<0?6:-2),
+      labelBaseline:diff24.map(v=>v<0?'top':'bottom'),
+      labelFormat:v=>v>0?'+'+v+'%':v+'%'
+    }]
+  },
+  options:{
+    responsive:true,maintainAspectRatio:false,
+    plugins:{legend:{display:false}},
+    scales:{
+      y:{ticks:{callback:v=>v+'%',font:tickFont},grid:{color:gridColor}},
+      x:{ticks:{font:{size:9},maxRotation:45,autoSkip:false},grid:{display:false}}
+    }
+  }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>小猪存钱罐活动分析报告 2026.05.21—05.25</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:"Microsoft YaHei","PingFang SC","Helvetica Neue",sans-serif;background:#F0F2F5;color:#263238;font-size:14px}
+.page{max-width:1200px;margin:0 auto;padding:24px}
+/* header */
+.hdr{background:#fff;border-radius:12px;padding:28px 32px 20px;margin-bottom:20px;border-left:5px solid #1565C0}
+.hdr h1{font-size:24px;font-weight:600;color:#1565C0;margin-bottom:6px}
+.hdr p{font-size:13px;color:#607D8B;line-height:1.6}
+/* section */
+.sec{background:#fff;border-radius:12px;padding:24px 28px;margin-bottom:20px}
+.sec-hd{font-size:16px;font-weight:600;color:#1565C0;padding-bottom:12px;margin-bottom:18px;border-bottom:2px solid #E3F0FF;display:flex;align-items:center;gap:8px}
+.sec-hd span{background:#E3F0FF;color:#1565C0;font-size:12px;padding:2px 8px;border-radius:4px;font-weight:500}
+/* KPI grid — 3 rows × 5 cols */
+.kpi-platform{margin-bottom:16px}
+.kpi-platform-name{font-size:13px;font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:8px}
+.plt-badge{display:inline-block;padding:3px 12px;border-radius:5px;font-size:12px;font-weight:600;color:#fff}
+.kpi-row{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
+.kpi-card{border-radius:8px;padding:14px 16px;border:1.5px solid transparent}
+.kpi-card .lbl{font-size:11px;color:#607D8B;margin-bottom:6px}
+.kpi-card .val{font-size:22px;font-weight:600;line-height:1.1;margin-bottom:4px}
+.kpi-card .sub{font-size:11px;color:#607D8B}
+.kpi-card .sub.up{color:#2E7D32;font-weight:500}
+/* platform colors */
+.lu .kpi-card{background:#FFF5F5;border-color:#FFCDD2}.lu .kpi-card .val{color:#E53935}
+.wy .kpi-card{background:#F0F7FF;border-color:#BBDEFB}.wy .kpi-card .val{color:#1565C0}
+.so .kpi-card{background:#F1FBF3;border-color:#C8E6C9}.so .kpi-card .val{color:#2E7D32}
+/* summary table */
+.tbl-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{background:#1565C0;color:#fff;padding:9px 12px;text-align:center;font-weight:500;white-space:nowrap}
+td{padding:9px 12px;text-align:center;border-bottom:1px solid #EFF2F5;white-space:nowrap}
+tr:nth-child(even) td{background:#F8FBFF}
+tr:hover td{background:#E3F0FF}
+td.name{font-weight:600;text-align:left}
+td.up{color:#2E7D32;font-weight:500}
+/* charts */
+.chart-row{display:grid;gap:16px;margin-bottom:16px}
+.chart-row.c2{grid-template-columns:1fr 1fr}
+.chart-row.c3{grid-template-columns:1fr 1fr 1fr}
+.chart-card{background:#F8FBFF;border-radius:8px;padding:16px}
+.chart-card h3{font-size:12px;color:#607D8B;margin-bottom:10px;font-weight:500}
+.chart-card canvas{width:100%!important}
+/* detail tables */
+.detail-block{margin-bottom:20px}
+.detail-block h3{font-size:13px;font-weight:600;margin-bottom:8px;padding:6px 12px;border-radius:6px;display:inline-block}
+.lu-hd{background:#FFF5F5;color:#E53935}.wy-hd{background:#F0F7FF;color:#1565C0}.so-hd{background:#F1FBF3;color:#2E7D32}
+table.detail th{background:#455A64}
+table.detail td.date{font-weight:600;color:#263238}
+table.detail tr:last-child td{background:#EFF4FF;font-weight:600;color:#1565C0}
+/* insights */
+.insight-box{background:#F0F7FF;border-left:3px solid #1565C0;border-radius:0 8px 8px 0;padding:12px 16px;margin-top:14px}
+.insight-box p{font-size:13px;color:#37474F;line-height:1.8;margin-bottom:2px}
+.insight-box p:last-child{margin-bottom:0}
+/* action table */
+table.action th{background:#37474F}
+table.action td{text-align:left;vertical-align:top;line-height:1.6}
+table.action td.pri{text-align:center;font-weight:600}
+.tag-r{background:#FFEBEE;color:#C62828;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600}
+.tag-y{background:#FFF8E1;color:#F57F17;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600}
+.tag-b{background:#E3F2FD;color:#1565C0;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600}
+/* concl */
+.concl-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px}
+.concl-card{background:#F8FBFF;border-radius:8px;padding:16px;border-left:4px solid #1565C0}
+.concl-card h4{font-size:13px;font-weight:600;color:#1565C0;margin-bottom:6px}
+.concl-card p{font-size:13px;color:#37474F;line-height:1.6}
+/* footer */
+.footer{text-align:center;font-size:12px;color:#90A4AE;padding:16px 0 8px}
+/* print */
+@media print{body{background:#fff}.page{padding:12px}canvas{max-height:220px!important}}
+</style>
+</head>
+<body>
+<div class="page">
+
+<!-- HEADER -->
+<div class="hdr">
+  <h1>小猪存钱罐活动分析报告</h1>
+  <p>统计周期：2026.05.21 — 2026.05.25 &nbsp;·&nbsp; 对比基准：活动用户当日 vs 前一日 &nbsp;·&nbsp; 金额单位：USD &nbsp;·&nbsp; 覆盖平台：LUCRO · WEY7 · SOLUNO</p>
+</div>
+
+<!-- 一、封面KPI -->
+<div class="sec">
+  <div class="sec-hd">核心指标速览 <span>2026.05.21—05.25</span></div>
+
+  <div class="kpi-platform lu">
+    <div class="kpi-platform-name"><span class="plt-badge" style="background:#E53935">LUCRO</span></div>
+    <div class="kpi-row">
+      <div class="kpi-card"><div class="lbl">活动总用户</div><div class="val">272 人</div><div class="sub">5日累计</div></div>
+      <div class="kpi-card"><div class="lbl">总赠送金额</div><div class="val">$8,780</div><div class="sub">USD</div></div>
+      <div class="kpi-card"><div class="lbl">人均赠送</div><div class="val">$32.3</div><div class="sub">USD/人</div></div>
+      <div class="kpi-card"><div class="lbl">充值金额增长率</div><div class="val">+107%</div><div class="sub up">活动日/前一日</div></div>
+      <div class="kpi-card"><div class="lbl">次日留存 活动 vs 大盘</div><div class="val">60.6%</div><div class="sub up">大盘 24.6%&nbsp; 差 +36pp</div></div>
+    </div>
+  </div>
+
+  <div class="kpi-platform wy" style="margin-top:12px">
+    <div class="kpi-platform-name"><span class="plt-badge" style="background:#1E88E5">WEY7</span></div>
+    <div class="kpi-row">
+      <div class="kpi-card"><div class="lbl">活动总用户</div><div class="val">206 人</div><div class="sub">5日累计</div></div>
+      <div class="kpi-card"><div class="lbl">总赠送金额</div><div class="val">$8,159</div><div class="sub">USD</div></div>
+      <div class="kpi-card"><div class="lbl">人均赠送</div><div class="val">$39.6</div><div class="sub up">三盘最高</div></div>
+      <div class="kpi-card"><div class="lbl">充值金额增长率</div><div class="val">+106%</div><div class="sub up">活动日/前一日</div></div>
+      <div class="kpi-card"><div class="lbl">次日留存 活动 vs 大盘</div><div class="val">67.2%</div><div class="sub up">大盘 30.1%&nbsp; 差 +37pp</div></div>
+    </div>
+  </div>
+
+  <div class="kpi-platform so" style="margin-top:12px">
+    <div class="kpi-platform-name"><span class="plt-badge" style="background:#43A047">SOLUNO</span></div>
+    <div class="kpi-row">
+      <div class="kpi-card"><div class="lbl">活动总用户</div><div class="val">285 人</div><div class="sub up">三盘最多</div></div>
+      <div class="kpi-card"><div class="lbl">总赠送金额</div><div class="val">$11,955</div><div class="sub up">三盘最高</div></div>
+      <div class="kpi-card"><div class="lbl">人均赠送</div><div class="val">$41.9</div><div class="sub">USD/人</div></div>
+      <div class="kpi-card"><div class="lbl">充值金额增长率</div><div class="val">+116%</div><div class="sub up">三盘最高</div></div>
+      <div class="kpi-card"><div class="lbl">次日留存 活动 vs 大盘</div><div class="val">70.7%</div><div class="sub up">大盘 39.8%&nbsp; 差 +31pp</div></div>
+    </div>
+  </div>
+
+  <!-- 汇总表 -->
+  <div class="tbl-wrap" style="margin-top:20px">
+    <table>
+      <thead><tr>
+        <th style="text-align:left">平台</th><th>活动用户</th><th>总赠送(USD)</th><th>人均赠送</th>
+        <th>充值增长占比</th><th>充值金额增长率</th><th>投注增长占比</th><th>投注金额增长率</th>
+        <th>活动次留</th><th>大盘次留</th><th>次留差值</th>
+      </tr></thead>
+      <tbody>
+        <tr><td class="name" style="color:#E53935">LUCRO</td><td>272人</td><td>$8,780</td><td>$32.3</td><td class="up">68.8%</td><td class="up">+107%</td><td class="up">65.4%</td><td class="up">+114%</td><td class="up">60.6%</td><td>24.6%</td><td class="up">+36pp</td></tr>
+        <tr><td class="name" style="color:#1E88E5">WEY7</td><td>206人</td><td>$8,159</td><td>$39.6</td><td class="up">68.4%</td><td class="up">+106%</td><td class="up">67.0%</td><td class="up">+68%</td><td class="up">67.2%</td><td>30.1%</td><td class="up">+37pp</td></tr>
+        <tr><td class="name" style="color:#43A047">SOLUNO</td><td>285人</td><td>$11,955</td><td>$41.9</td><td class="up">71.2%</td><td class="up">+116%</td><td class="up">63.9%</td><td class="up">+74%</td><td class="up">70.7%</td><td>39.8%</td><td class="up">+31pp</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- 二、活动规模 -->
+<div class="sec">
+  <div class="sec-hd">一、活动规模与赠送趋势</div>
+  <div class="chart-row c3">
+    <div class="chart-card"><h3>每日活动用户数（人）</h3><div style="height:220px"><canvas id="c1"></canvas></div></div>
+    <div class="chart-card"><h3>每日人均赠送金额（USD）</h3><div style="height:220px"><canvas id="c2"></canvas></div></div>
+    <div class="chart-card"><h3>每日总赠送金额（USD，堆叠）</h3><div style="height:220px"><canvas id="c3"></canvas></div></div>
+  </div>
+  <div class="insight-box">
+    <p>· <strong>LUCRO</strong> 活动用户从首日 11人 增至 5/25 的 111人，5日涨幅近 <strong>10×</strong>，增速三盘最快。</p>
+    <p>· <strong>SOLUNO</strong> 总赠送最高（$11,955），用户规模最大（285人），人均赠送 5/25 达 $54.3 峰值。</p>
+    <p>· <strong>WEY7</strong> 人均赠送三盘最高（$39.6），5/23 达 $52.6 峰值，单用户活动激励最强。</p>
+  </div>
+</div>
+
+<!-- 三、拉动效果 -->
+<div class="sec">
+  <div class="sec-hd">二、活动拉动效果 — 充值 &amp; 投注 <span>活动用户当日 vs 前一日</span></div>
+  <div class="chart-row c2">
+    <div class="chart-card"><h3>充值增长用户占比（%）</h3><div style="height:230px"><canvas id="c4"></canvas></div></div>
+    <div class="chart-card"><h3>投注增长用户占比（%）</h3><div style="height:230px"><canvas id="c5"></canvas></div></div>
+  </div>
+  <div class="chart-row c2">
+    <div class="chart-card"><h3>充值金额增长率（%，5/22-5/25，已剔除首日基数失真）</h3><div style="height:230px"><canvas id="c6"></canvas></div></div>
+    <div class="chart-card"><h3>投注金额增长率（%，5/22-5/25，已剔除首日基数失真）</h3><div style="height:230px"><canvas id="c7"></canvas></div></div>
+  </div>
+  <div class="chart-row c3">
+    <div class="chart-card"><h3>LUCRO 充值金额：活动日 vs 前一日（USD）</h3><div style="height:200px"><canvas id="c8"></canvas></div></div>
+    <div class="chart-card"><h3>WEY7 充值金额：活动日 vs 前一日（USD）</h3><div style="height:200px"><canvas id="c9"></canvas></div></div>
+    <div class="chart-card"><h3>SOLUNO 充值金额：活动日 vs 前一日（USD）</h3><div style="height:200px"><canvas id="c10"></canvas></div></div>
+  </div>
+  <div class="chart-row c3">
+    <div class="chart-card"><h3>LUCRO 投注金额：活动日 vs 前一日（USD）</h3><div style="height:200px"><canvas id="c11"></canvas></div></div>
+    <div class="chart-card"><h3>WEY7 投注金额：活动日 vs 前一日（USD）</h3><div style="height:200px"><canvas id="c12"></canvas></div></div>
+    <div class="chart-card"><h3>SOLUNO 投注金额：活动日 vs 前一日（USD）</h3><div style="height:200px"><canvas id="c13"></canvas></div></div>
+  </div>
+
+  <!-- 逐日明细表 -->
+  <h3 style="font-size:14px;color:#37474F;margin:16px 0 10px">逐日拉动明细</h3>
+  <div class="detail-block">
+    <div class="lu-hd detail-block" style="display:inline-block;padding:4px 12px;border-radius:5px;margin-bottom:8px;font-weight:600;color:#E53935;background:#FFF5F5">LUCRO</div>
+    <div class="tbl-wrap"><table class="detail">
+      <thead><tr><th>日期</th><th>用户数</th><th>充值增长人数</th><th>充值(前 USD)</th><th>充值(后 USD)</th><th>充值增长率</th><th>投注增长人数</th><th>投注(前 USD)</th><th>投注(后 USD)</th><th>投注增长率</th></tr></thead>
+      <tbody>
+        <tr><td class="date">5/21</td><td>11人</td><td>11人(100%)</td><td>$370</td><td>$11,232</td><td class="up">+2936%</td><td>11人(100%)</td><td>$5,788</td><td>$122,649</td><td class="up">+2019%</td></tr>
+        <tr><td class="date">5/22</td><td>35人</td><td>25人(71%)</td><td>$13,286</td><td>$27,364</td><td class="up">+106%</td><td>19人(54%)</td><td>$162,126</td><td>$268,187</td><td class="up">+65%</td></tr>
+        <tr><td class="date">5/23</td><td>50人</td><td>34人(68%)</td><td>$16,008</td><td>$42,113</td><td class="up">+163%</td><td>33人(66%)</td><td>$215,632</td><td>$494,510</td><td class="up">+129%</td></tr>
+        <tr><td class="date">5/24</td><td>65人</td><td>41人(63%)</td><td>$16,414</td><td>$37,942</td><td class="up">+131%</td><td>43人(66%)</td><td>$139,690</td><td>$361,055</td><td class="up">+158%</td></tr>
+        <tr><td class="date">5/25</td><td>111人</td><td>76人(69%)</td><td>$39,362</td><td>$58,199</td><td class="up">+48%</td><td>72人(65%)</td><td>$331,074</td><td>$583,313</td><td class="up">+76%</td></tr>
+        <tr><td class="date">合计</td><td>272人</td><td>187人(69%)</td><td>$85,440</td><td>$176,850</td><td class="up">+107%</td><td>178人(65%)</td><td>$854,310</td><td>$1,829,714</td><td class="up">+114%</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+  <div class="detail-block">
+    <div style="display:inline-block;padding:4px 12px;border-radius:5px;margin-bottom:8px;font-weight:600;color:#1565C0;background:#F0F7FF">WEY7</div>
+    <div class="tbl-wrap"><table class="detail">
+      <thead><tr><th>日期</th><th>用户数</th><th>充值增长人数</th><th>充值(前 USD)</th><th>充值(后 USD)</th><th>充值增长率</th><th>投注增长人数</th><th>投注(前 USD)</th><th>投注(后 USD)</th><th>投注增长率</th></tr></thead>
+      <tbody>
+        <tr><td class="date">5/21</td><td>15人</td><td>15人(100%)</td><td>$2,000</td><td>$15,070</td><td class="up">+654%</td><td>14人(93%)</td><td>$30,291</td><td>$197,389</td><td class="up">+552%</td></tr>
+        <tr><td class="date">5/22</td><td>21人</td><td>16人(76%)</td><td>$9,303</td><td>$27,280</td><td class="up">+193%</td><td>16人(76%)</td><td>$136,660</td><td>$243,196</td><td class="up">+78%</td></tr>
+        <tr><td class="date">5/23</td><td>49人</td><td>32人(65%)</td><td>$33,440</td><td>$55,753</td><td class="up">+67%</td><td>28人(57%)</td><td>$349,473</td><td>$449,346</td><td class="up">+29%</td></tr>
+        <tr><td class="date">5/24</td><td>61人</td><td>37人(61%)</td><td>$25,278</td><td>$33,919</td><td class="up">+34%</td><td>39人(64%)</td><td>$280,010</td><td>$348,765</td><td class="up">+25%</td></tr>
+        <tr><td class="date">5/25</td><td>60人</td><td>41人(68%)</td><td>$15,175</td><td>$43,244</td><td class="up">+185%</td><td>41人(68%)</td><td>$159,614</td><td>$368,231</td><td class="up">+131%</td></tr>
+        <tr><td class="date">合计</td><td>206人</td><td>141人(68%)</td><td>$85,196</td><td>$175,266</td><td class="up">+106%</td><td>138人(67%)</td><td>$956,048</td><td>$1,606,927</td><td class="up">+68%</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+  <div class="detail-block">
+    <div style="display:inline-block;padding:4px 12px;border-radius:5px;margin-bottom:8px;font-weight:600;color:#2E7D32;background:#F1FBF3">SOLUNO</div>
+    <div class="tbl-wrap"><table class="detail">
+      <thead><tr><th>日期</th><th>用户数</th><th>充值增长人数</th><th>充值(前 USD)</th><th>充值(后 USD)</th><th>充值增长率</th><th>投注增长人数</th><th>投注(前 USD)</th><th>投注(后 USD)</th><th>投注增长率</th></tr></thead>
+      <tbody>
+        <tr><td class="date">5/21</td><td>17人</td><td>16人(94%)</td><td>$3,059</td><td>$19,086</td><td class="up">+524%</td><td>17人(100%)</td><td>$26,292</td><td>$184,419</td><td class="up">+601%</td></tr>
+        <tr><td class="date">5/22</td><td>37人</td><td>25人(68%)</td><td>$21,453</td><td>$28,133</td><td class="up">+31%</td><td>22人(60%)</td><td>$248,015</td><td>$269,644</td><td class="up">+9%</td></tr>
+        <tr><td class="date">5/23</td><td>62人</td><td>40人(65%)</td><td>$18,827</td><td>$39,138</td><td class="up">+108%</td><td>30人(48%)</td><td>$309,480</td><td>$448,927</td><td class="up">+45%</td></tr>
+        <tr><td class="date">5/24</td><td>75人</td><td>49人(65%)</td><td>$24,125</td><td>$52,383</td><td class="up">+117%</td><td>47人(63%)</td><td>$302,943</td><td>$501,697</td><td class="up">+66%</td></tr>
+        <tr><td class="date">5/25</td><td>94人</td><td>73人(78%)</td><td>$28,005</td><td>$67,227</td><td class="up">+140%</td><td>66人(70%)</td><td>$357,369</td><td>$763,066</td><td class="up">+114%</td></tr>
+        <tr><td class="date">合计</td><td>285人</td><td>203人(71%)</td><td>$95,469</td><td>$205,967</td><td class="up">+116%</td><td>182人(64%)</td><td>$1,244,099</td><td>$2,167,753</td><td class="up">+74%</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+
+  <div class="insight-box">
+    <p>· 充值增长用户占比三平台均在 <strong>68–71%</strong>，逾2/3活动用户当日充值金额有增长。</p>
+    <p>· 阶段充值增长率：LUCRO <strong>+107%</strong>，WEY7 <strong>+106%</strong>，SOLUNO <strong>+116%</strong>（最高），均超翻倍。</p>
+    <p>· 阶段投注增长率：LUCRO <strong>+114%</strong>（最高），WEY7 <strong>+68%</strong>，SOLUNO <strong>+74%</strong>。</p>
+    <p>· 注：5/21 首日增长率极高因前一日基数近零，以 5/22 起稳定期数据更具代表性。</p>
+  </div>
+</div>
+
+<!-- 四、留存 -->
+<div class="sec">
+  <div class="sec-hd">三、留存分析 — 活动用户 vs 大盘 <span>次日留存 5/21-5/24 · 2日留存 5/21-5/23</span></div>
+  <div class="chart-row c3">
+    <div class="chart-card"><h3>LUCRO 次日留存率对比（%）</h3><div style="height:220px"><canvas id="c14"></canvas></div></div>
+    <div class="chart-card"><h3>WEY7 次日留存率对比（%）</h3><div style="height:220px"><canvas id="c15"></canvas></div></div>
+    <div class="chart-card"><h3>SOLUNO 次日留存率对比（%）</h3><div style="height:220px"><canvas id="c16"></canvas></div></div>
+  </div>
+  <div class="chart-row c2">
+    <div class="chart-card"><h3>次日留存率均值（5/21-5/24）</h3><div style="height:220px"><canvas id="c17"></canvas></div></div>
+    <div class="chart-card"><h3>2日留存率均值（5/21-5/23）</h3><div style="height:220px"><canvas id="c18"></canvas></div></div>
+  </div>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th style="text-align:left">平台</th><th>活动次留均值</th><th>大盘次留均值</th><th>次留差值</th><th>活动2日留存</th><th>大盘2日留存</th><th>2日留存差值</th></tr></thead>
+      <tbody>
+        <tr><td class="name" style="color:#E53935">LUCRO</td><td class="up">60.6%</td><td>24.6%</td><td class="up">+36.0pp</td><td class="up">43.6%</td><td>19.2%</td><td class="up">+24.4pp</td></tr>
+        <tr><td class="name" style="color:#1E88E5">WEY7</td><td class="up">67.2%</td><td>30.1%</td><td class="up">+37.1pp</td><td class="up">60.3%</td><td>23.5%</td><td class="up">+36.8pp</td></tr>
+        <tr><td class="name" style="color:#43A047">SOLUNO</td><td class="up">70.7%</td><td>39.8%</td><td class="up">+30.9pp</td><td class="up">49.5%</td><td>35.2%</td><td class="up">+14.3pp</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="insight-box">
+    <p>· <strong>WEY7</strong> 次留均值 67.2% vs 大盘 30.1%，差距 <strong>+37pp</strong>，三盘最大。</p>
+    <p>· <strong>SOLUNO</strong> 次留 70.7%（三盘最高），2日留存 49.5%，多日留存最稳。</p>
+    <p>· <strong>LUCRO</strong> 次留 60.6%，大盘 24.6%，差距 +36pp；首日（5/21）仅 45.4%，次日激励有提升空间。</p>
+  </div>
+</div>
+
+<!-- 五、结论建议 -->
+<div class="sec">
+  <div class="sec-hd">四、综合结论与行动建议</div>
+  <div class="concl-grid">
+    <div class="concl-card"><h4>活动规模持续扩大，热度逐日攀升</h4><p>三平台用户数5日增幅LUCRO近10×、SOLUNO约5.5×、WEY7约4×，参与度健康扩散。</p></div>
+    <div class="concl-card"><h4>充值拉动效果显著，金额超翻倍增长</h4><p>充值增长率LUCRO +107%、WEY7 +106%、SOLUNO +116%，充值增长用户占比均超68%。</p></div>
+    <div class="concl-card"><h4>投注转化强劲，LUCRO流水效率最高</h4><p>投注增长率LUCRO +114%居首，赠送资金有效转化平台流水，WEY7和SOLUNO分别+68%/+74%。</p></div>
+    <div class="concl-card"><h4>活动用户留存全面优于大盘，差距+31~+37pp</h4><p>WEY7次留差距最大（+37pp），SOLUNO多日留存最稳，活动显著提升用户粘性。</p></div>
+  </div>
+  <div class="tbl-wrap">
+    <table class="action">
+      <thead><tr><th style="width:80px">优先级</th><th style="width:220px">建议事项</th><th>执行说明</th></tr></thead>
+      <tbody>
+        <tr><td class="pri"><span class="tag-r">紧急</span></td><td>WEY7 活动质量最优但规模小</td><td>专项扩大WEY7推广；学习其留存经验反哺其他平台；建议每日活动用户目标提升至100人+</td></tr>
+        <tr><td class="pri"><span class="tag-r">紧急</span></td><td>LUCRO 首日次留仅45%</td><td>活动当天1h/24h内推送次日回访提醒 + 阶梯充值道具激励，目标次留提升至65%以上</td></tr>
+        <tr><td class="pri"><span class="tag-y">本周</span></td><td>SOLUNO 持续放量，ROI健康</td><td>充值+116%、次留70.7%，建议增加活动预算15-20%；5/25数据显示势头仍强</td></tr>
+        <tr><td class="pri"><span class="tag-y">本周</span></td><td>优化赠送档位梯度</td><td>人均赠送日间波动反映高充用户激励不足，建议设置高额充值专属赠送比例</td></tr>
+        <tr><td class="pri"><span class="tag-b">下周</span></td><td>建立活动ROI监控体系</td><td>赠送成本 vs 净增充值/投注，按平台设置预警阈值，动态调整赠送规则</td></tr>
+        <tr><td class="pri"><span class="tag-b">下周</span></td><td>延伸追踪7日/14日留存</td><td>当前窗口仅5天，需持续追踪LTV，评估活动对用户生命周期的长期贡献</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="footer">报告生成时间：2026年5月26日 &nbsp;|&nbsp; 数据来源：各平台后台全量数据导出 &nbsp;|&nbsp; 覆盖：LUCRO · WEY7 · SOLUNO</div>
+</div>
+
+<script>
+const LU='#E53935',WY='#1E88E5',SO='#43A047';
+const LUl='rgba(229,57,53,0.18)',WYl='rgba(30,136,229,0.18)',SOl='rgba(67,160,71,0.18)';
+const GRAY='rgba(144,164,174,0.7)';
+const DL=['5/21','5/22','5/23','5/24','5/25'];
+const DL4=['5/21','5/22','5/23','5/24'];
+const DL_S=['5/22','5/23','5/24','5/25'];
+
+const D={
+  lucro:{users:[11,35,50,65,111],gift:[337.3,1104.6,1826.2,2010.6,3501.1],avg:[30.7,31.6,36.5,30.9,31.5],
+    r_pct:[100,71.4,68,63.1,68.5],b_pct:[100,54.3,66,66.2,64.9],
+    r_rate:[106,163.1,131.2,47.9],b_rate:[65.4,129.3,158.5,76.2],
+    ar:[11232,27364,42113,37942,58199],pr:[370,13286,16008,16414,39362],
+    ab:[122649,268187,494510,361055,583313],pb:[5788,162126,215632,139690,331074],
+    ret:[45.4,62.9,68,66.2],big_ret:[21.7,23.8,23.6,29.1]},
+  wey7:{users:[15,21,49,61,60],gift:[453.4,696.9,2578.3,2258.4,2171.9],avg:[30.2,33.2,52.6,37,36.2],
+    r_pct:[100,76.2,65.3,60.7,68.3],b_pct:[93.3,76.2,57.1,63.9,68.3],
+    r_rate:[193.2,66.7,34.2,185],b_rate:[78,28.6,24.6,130.7],
+    ar:[15070,27280,55753,33919,43244],pr:[2000,9303,33440,25278,15175],
+    ab:[197389,243196,449346,348765,368231],pb:[30291,136660,349473,280010,159614],
+    ret:[86.7,66.7,61.2,54.1],big_ret:[31.3,31.3,27.1,30.5]},
+  soluno:{users:[17,37,62,75,94],gift:[450.2,1663.3,2192.2,2543.2,5105.9],avg:[26.5,45,35.4,33.9,54.3],
+    r_pct:[94.1,67.6,64.5,65.3,77.7],b_pct:[100,59.5,48.4,62.7,70.2],
+    r_rate:[31.1,107.9,117.1,140.1],b_rate:[8.7,45.1,65.6,113.5],
+    ar:[19086,28133,39138,52383,67227],pr:[3059,21453,18827,24125,28005],
+    ab:[184419,269644,448927,501697,763066],pb:[26292,248015,309480,302943,357369],
+    ret:[58.8,75.7,79,69.3],big_ret:[42.7,41.2,38.3,37.2]}
+};
+
+function baseOpts(yFmt){
+  return {responsive:true,maintainAspectRatio:false,
+    plugins:{legend:{labels:{font:{size:11},boxWidth:12}},tooltip:{mode:'index',intersect:false}},
+    scales:{x:{ticks:{font:{size:11}},grid:{display:false}},
+            y:{ticks:{font:{size:11},callback:yFmt||(v=>v)},grid:{color:'rgba(0,0,0,0.05)'}}}};
+}
+
+// c1 users trend
+new Chart('c1',{type:'line',data:{labels:DL,datasets:[
+  {label:'LUCRO',data:D.lucro.users,borderColor:LU,backgroundColor:LUl,fill:true,tension:0.3,pointRadius:4,borderWidth:2},
+  {label:'WEY7', data:D.wey7.users, borderColor:WY,backgroundColor:WYl,fill:true,tension:0.3,pointRadius:4,borderWidth:2},
+  {label:'SOLUNO',data:D.soluno.users,borderColor:SO,backgroundColor:SOl,fill:true,tension:0.3,pointRadius:4,borderWidth:2},
+]},options:{...baseOpts(),responsive:true,maintainAspectRatio:false,
+  plugins:{legend:{labels:{font:{size:11},boxWidth:12}},
+    tooltip:{mode:'index',intersect:false,callbacks:{label:c=>` ${c.dataset.label}: ${c.parsed.y}人`}}},
+  scales:{x:{ticks:{font:{size:11}},grid:{display:false}},y:{ticks:{font:{size:11}},grid:{color:'rgba(0,0,0,0.05)'}}}}});
+
+// c2 avg gift
+new Chart('c2',{type:'bar',data:{labels:DL,datasets:[
+  {label:'LUCRO',data:D.lucro.avg,backgroundColor:LU,barPercentage:0.7},
+  {label:'WEY7', data:D.wey7.avg, backgroundColor:WY,barPercentage:0.7},
+  {label:'SOLUNO',data:D.soluno.avg,backgroundColor:SO,barPercentage:0.7},
+]},options:{...baseOpts(v=>`$${v}`),responsive:true,maintainAspectRatio:false,
+  plugins:{legend:{labels:{font:{size:11},boxWidth:12}},tooltip:{mode:'index',intersect:false}},
+  scales:{x:{ticks:{font:{size:11}},grid:{display:false}},y:{ticks:{font:{size:11},callback:v=>`$${v}`},grid:{color:'rgba(0,0,0,0.05)'}}}}});
+
+// c3 total gift stacked
+new Chart('c3',{type:'bar',data:{labels:DL,datasets:[
+  {label:'LUCRO',data:D.lucro.gift,backgroundColor:LU,stack:'s'},
+  {label:'WEY7', data:D.wey7.gift, backgroundColor:WY,stack:'s'},
+  {label:'SOLUNO',data:D.soluno.gift,backgroundColor:SO,stack:'s'},
+]},options:{responsive:true,maintainAspectRatio:false,
+  plugins:{legend:{labels:{font:{size:11},boxWidth:12}},tooltip:{mode:'index',intersect:false}},
+  scales:{x:{stacked:true,ticks:{font:{size:11}},grid:{display:false}},
+          y:{stacked:true,ticks:{font:{size:11},callback:v=>`$${v}`},grid:{color:'rgba(0,0,0,0.05)'}}}}});
+
+// c4/c5 growth pct
+function lineChart(id,luD,wyD,soD,fmt){
+  new Chart(id,{type:'line',data:{labels:DL,datasets:[
+    {label:'LUCRO',data:luD,borderColor:LU,fill:false,tension:0.3,pointRadius:4,borderWidth:2},
+    {label:'WEY7', data:wyD,borderColor:WY,fill:false,tension:0.3,pointRadius:4,borderWidth:2},
+    {label:'SOLUNO',data:soD,borderColor:SO,fill:false,tension:0.3,pointRadius:4,borderWidth:2},
+  ]},options:{responsive:true,maintainAspectRatio:false,
+    plugins:{legend:{labels:{font:{size:11},boxWidth:12}},tooltip:{mode:'index',intersect:false,
+      callbacks:{label:c=>` ${c.dataset.label}: ${c.parsed.y.toFixed(1)}${fmt}`}}},
+    scales:{x:{ticks:{font:{size:11}},grid:{display:false}},
+      y:{min:0,max:110,ticks:{font:{size:11},callback:v=>`${v}${fmt}`},grid:{color:'rgba(0,0,0,0.05)'}}}}});
+}
+lineChart('c4',D.lucro.r_pct,D.wey7.r_pct,D.soluno.r_pct,'%');
+lineChart('c5',D.lucro.b_pct,D.wey7.b_pct,D.soluno.b_pct,'%');
+
+// c6/c7 amount growth rate (stable 5/22-5/25)
+function lineChart4(id,luD,wyD,soD){
+  new Chart(id,{type:'line',data:{labels:DL_S,datasets:[
+    {label:'LUCRO',data:luD,borderColor:LU,fill:false,tension:0.3,pointRadius:4,borderWidth:2},
+    {label:'WEY7', data:wyD,borderColor:WY,fill:false,tension:0.3,pointRadius:4,borderWidth:2},
+    {label:'SOLUNO',data:soD,borderColor:SO,fill:false,tension:0.3,pointRadius:4,borderWidth:2},
+  ]},options:{responsive:true,maintainAspectRatio:false,
+    plugins:{legend:{labels:{font:{size:11},boxWidth:12}},tooltip:{mode:'index',intersect:false,
+      callbacks:{label:c=>` ${c.dataset.label}: +${c.parsed.y.toFixed(1)}%`}}},
+    scales:{x:{ticks:{font:{size:11}},grid:{display:false}},
+      y:{ticks:{font:{size:11},callback:v=>`+${v}%`},grid:{color:'rgba(0,0,0,0.05)'}}}}});
+}
+lineChart4('c6',D.lucro.r_rate,D.wey7.r_rate,D.soluno.r_rate);
+lineChart4('c7',D.lucro.b_rate,D.wey7.b_rate,D.soluno.b_rate);
+
+// c8/c9/c10 recharge compare
+function compareChart(id,actD,preD,col,colL){
+  new Chart(id,{type:'bar',data:{labels:DL,datasets:[
+    {label:'活动日',data:actD,backgroundColor:col,barPercentage:0.75},
+    {label:'前一日',data:preD,backgroundColor:colL,barPercentage:0.75,borderColor:col,borderWidth:1},
+  ]},options:{responsive:true,maintainAspectRatio:false,
+    plugins:{legend:{labels:{font:{size:11},boxWidth:12}},tooltip:{mode:'index',intersect:false,
+      callbacks:{label:c=>` ${c.dataset.label}: $${(c.parsed.y/1000).toFixed(1)}k`}}},
+    scales:{x:{ticks:{font:{size:11}},grid:{display:false}},
+      y:{ticks:{font:{size:11},callback:v=>`$${(v/1000).toFixed(0)}k`},grid:{color:'rgba(0,0,0,0.05)'}}}}});
+}
+compareChart('c8',D.lucro.ar,D.lucro.pr,LU,'rgba(229,57,53,0.25)');
+compareChart('c9',D.wey7.ar, D.wey7.pr, WY,'rgba(30,136,229,0.25)');
+compareChart('c10',D.soluno.ar,D.soluno.pr,SO,'rgba(67,160,71,0.25)');
+
+// c11/c12/c13 bet compare
+function compareBetChart(id,actD,preD,col,colL){
+  new Chart(id,{type:'bar',data:{labels:DL,datasets:[
+    {label:'活动日',data:actD,backgroundColor:col,barPercentage:0.75},
+    {label:'前一日',data:preD,backgroundColor:colL,barPercentage:0.75,borderColor:col,borderWidth:1},
+  ]},options:{responsive:true,maintainAspectRatio:false,
+    plugins:{legend:{labels:{font:{size:11},boxWidth:12}},tooltip:{mode:'index',intersect:false,
+      callbacks:{label:c=>` ${c.dataset.label}: $${(c.parsed.y/10000).toFixed(1)}w`}}},
+    scales:{x:{ticks:{font:{size:11}},grid:{display:false}},
+      y:{ticks:{font:{size:11},callback:v=>`$${(v/10000).toFixed(0)}w`},grid:{color:'rgba(0,0,0,0.05)'}}}}});
+}
+compareBetChart('c11',D.lucro.ab,D.lucro.pb,LU,'rgba(229,57,53,0.25)');
+compareBetChart('c12',D.wey7.ab, D.wey7.pb, WY,'rgba(30,136,229,0.25)');
+compareBetChart('c13',D.soluno.ab,D.soluno.pb,SO,'rgba(67,160,71,0.25)');
+
+// c14/c15/c16 retention D1
+function retChart(id,pigD,bigD,col){
+  new Chart(id,{type:'bar',data:{labels:DL4,datasets:[
+    {label:'活动用户',data:pigD,backgroundColor:col,barPercentage:0.75},
+    {label:'大盘',data:bigD,backgroundColor:'rgba(144,164,174,0.5)',barPercentage:0.75,borderColor:'#90A4AE',borderWidth:1},
+  ]},options:{responsive:true,maintainAspectRatio:false,
+    plugins:{legend:{labels:{font:{size:11},boxWidth:12}},tooltip:{mode:'index',intersect:false,
+      callbacks:{label:c=>` ${c.dataset.label}: ${c.parsed.y.toFixed(1)}%`}}},
+    scales:{x:{ticks:{font:{size:11}},grid:{display:false}},
+      y:{ticks:{font:{size:11},callback:v=>`${v}%`},grid:{color:'rgba(0,0,0,0.05)'},max:100}}}});
+}
+retChart('c14',D.lucro.ret,D.lucro.big_ret,LU);
+retChart('c15',D.wey7.ret, D.wey7.big_ret, WY);
+retChart('c16',D.soluno.ret,D.soluno.big_ret,SO);
+
+// c17/c18 avg retention bar
+function avgRetChart(id,pigVals,bigVals){
+  new Chart(id,{type:'bar',data:{labels:['LUCRO','WEY7','SOLUNO'],datasets:[
+    {label:'活动用户',data:pigVals,backgroundColor:[LU,WY,SO],barPercentage:0.65},
+    {label:'大盘',data:bigVals,backgroundColor:'rgba(144,164,174,0.5)',barPercentage:0.65,borderColor:'#90A4AE',borderWidth:1},
+  ]},options:{responsive:true,maintainAspectRatio:false,
+    plugins:{legend:{labels:{font:{size:11},boxWidth:12}},tooltip:{mode:'index',intersect:false,
+      callbacks:{label:c=>` ${c.dataset.label}: ${c.parsed.y.toFixed(1)}%`}}},
+    scales:{x:{ticks:{font:{size:11}},grid:{display:false}},
+      y:{ticks:{font:{size:11},callback:v=>`${v}%`},grid:{color:'rgba(0,0,0,0.05)'},max:85}}}});
+}
+avgRetChart('c17',[60.6,67.2,70.7],[24.6,30.1,39.8]);
+avgRetChart('c18',[43.6,60.3,49.5],[19.2,23.5,35.2]);
+</script>
+</body>
+</html>
