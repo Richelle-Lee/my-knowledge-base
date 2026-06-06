@@ -38,7 +38,7 @@ notes_data = sorted(
     reverse=True
 )
 
-pdf_files = sorted(glob.glob("data/reports/*.pdf"), reverse=True)
+pdf_files = sorted(glob.glob("data/*.pdf"), reverse=True)
 
 # 侧边栏
 st.sidebar.title("📚 我的知识库")
@@ -96,7 +96,7 @@ elif page == "📄 报告中心":
             selected = st.radio("选择报告", file_names, label_visibility="collapsed")
 
         with col2:
-            selected_path = f"data/reports/{selected}"
+            selected_path = f"data/{selected}"
             st.subheader(selected.replace(".pdf", "").replace("_", " "))
 
             # 下载按钮
