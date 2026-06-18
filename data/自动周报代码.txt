@@ -1,0 +1,1453 @@
+"""
+MX 平台数据周报 v7.3
+变更：
+① 总代表 3留(本/上) 合并一列，同 次日留存(本/上) 格式
+② 总代留存数据源：首充充值留存_** 中 2日(次留)、3日(3留)、6日(7留)
+   （该表当日=第0日，故 2日=lag1次留，3日=lag2三留，6日=lag6七留）
+③ 大盘留存：日报-大盘日报_** 首充2/3/7日复充率作为次留/3留/7留
+④ 留存目标对比：次留21% 3留15% 7留11% 14留8% 30留6%，写入大盘章节表格
+⑤ 总代表列宽/字号优化，确保所有内容单行显示
+"""
+from pathlib import Path
+import sys, io, warnings
+from datetime import datetime, timedelta
+import numpy as np, pandas as pd
+import matplotlib; matplotlib.use("Agg")
+import matplotlib.pyplot as plt, matplotlib.ticker as mticker
+import matplotlib.gridspec as gridspec, matplotlib.patches as mpatches
+warnings.filterwarnings("ignore")
+
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.units import cm
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
+from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Table,
+    TableStyle, Image, PageBreak, HRFlowable, KeepTogether)
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+
+# ── 路径配置 ─────────────────────────────────────────────
+if sys.platform != "win32":
+    DATA_ROOT  = Path("/mnt/user-data/uploads")
+    OUTPUT_DIR = Path("/mnt/user-data/outputs")
+else:
+    DATA_ROOT  = Path(r"D:\周报更新版\MX")
+    OUTPUT_DIR = Path(r"D:\周报更新版\MX\输出")
+
+THIS_WEEK  = ("20260515", "20260521")
+LAST_WEEK  = ("20260508", "20260514")
+REPORT_END = THIS_WEEK[1]
+
+# ── 留存目标 ─────────────────────────────────────────────
+RET_TARGETS = {"次留": 21.0, "3留": 15.0, "7留": 11.0, "14留": 8.0, "30留": 6.0}
+
+# ── 全局字体/颜色 ─────────────────────────────────────────
+FN, FNB = "WQY", "WQYB"
+FILES: dict = {}
+
+C_BLUE   = colors.HexColor("#1d4ed8");  C_BLUE2  = colors.HexColor("#3b82f6")
+C_GREEN  = colors.HexColor("#059669");  C_RED    = colors.HexColor("#dc2626")
+C_AMBER  = colors.HexColor("#d97706");  C_PURPLE = colors.HexColor("#7c3aed")
+C_GRAY   = colors.HexColor("#64748b");  C_LGRAY  = colors.HexColor("#f1f5f9")
+C_WHITE  = colors.white;                C_DARK   = colors.HexColor("#1e293b")
+C_BORDER = colors.HexColor("#cbd5e1");  C_ROW    = colors.HexColor("#f8fafc")
+C_TEAL   = colors.HexColor("#0f766e");  C_TARGET = colors.HexColor("#0369a1")
+
+PW, PH = A4
+MARGIN  = 1.6 * cm
+CHART_COLORS = ["#1d4ed8","#059669","#d97706","#7c3aed","#dc2626",
+                "#0891b2","#65a30d","#ea580c","#9333ea","#be185d","#475569","#0f766e"]
+CR_HIGH, CR_LOW = 17, 5
+MFR_SHORT = {"Rectangle":"RG","Pragmatic Play":"PP","PG Soft":"PG","PlayTech":"PT","Originals":"自研"}
+
+TRUNCATE = {"首充次日复充率":1,"首充次日复投率":1,"首充当日复充率":0,
+            "首充7日复充率":6,"首充30日复充率":999,"首充2日复充率":1,"首充3日复充率":2}
+
+# ── 工具函数 ──────────────────────────────────────────────
+def shorten_mfr(n):
+    if not isinstance(n, str): return str(n)
+    for k, v in MFR_SHORT.items():
+        if k in n: return v
+    return n
+
+def ret_end(week_start: str, lag: int) -> str | None:
+    e = (datetime.strptime(REPORT_END, "%Y%m%d") - timedelta(days=lag)).strftime("%Y%m%d")
+    return e if e >= week_start else None
+
+def fmt_lbl(d: str | None) -> str:
+    return f"{d[4:6]}/{d[6:]}" if d else "-"
+
+def clean(s):
+    try: return float(str(s).replace(",","").replace("%","").strip())
+    except: return np.nan
+
+def to_num(df, cols=None):
+    if cols is None:
+        cols = [c for c in df.columns if c not in ("日期","总代.名称","name_总代","总代.ID")]
+    for c in cols:
+        if c in df.columns: df[c] = df[c].apply(clean)
+    return df
+
+def pct(n, o):   return (n-o)/abs(o)*100 if o and o != 0 else 0.0
+def pct_vec(ns, os):
+    return ((ns-os)/os.abs()*100).replace([np.inf,-np.inf],0).fillna(0)
+def trunc_mean(s, drop=0):
+    if drop >= len(s): return np.nan
+    v = s.iloc[:len(s)-drop] if drop else s
+    nz = v[v > 0]; return nz.mean() if len(nz) else v.mean()
+
+def wavg_series(vals, weights):
+    ok = vals.notna() & (weights > 0)
+    if not ok.any(): return np.nan
+    return float(np.average(vals[ok], weights=weights[ok]))
+
+def fig_img(fig, w=16, h=7):
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
+    buf.seek(0); plt.close(fig)
+    return Image(buf, width=w*cm, height=h*cm)
+
+def find_chinese_font():
+    import platform
+    if platform.system() == "Windows":
+        cands = [r"C:\Windows\Fonts\msyh.ttc", r"C:\Windows\Fonts\msyhbd.ttc",
+                 r"C:\Windows\Fonts\simsun.ttc", r"C:\Windows\Fonts\simhei.ttf"]
+    elif platform.system() == "Darwin":
+        cands = ["/System/Library/Fonts/PingFang.ttc"]
+    else:
+        cands = ["/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+                 "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+                 "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"]
+    for p in cands:
+        if Path(p).exists(): return p
+    from matplotlib import font_manager as fm
+    for f in fm.fontManager.ttflist:
+        if any(k in f.name for k in ["Hei","YaHei","SimSun","WenQuanYi","Noto Sans CJK"]):
+            if Path(f.fname).exists(): return f.fname
+    raise FileNotFoundError("未找到中文字体")
+
+def setup():
+    global FONT_PATH
+    FONT_PATH = find_chinese_font()
+    print(f"  ▶ 字体：{FONT_PATH}")
+    ttc = FONT_PATH.lower().endswith(".ttc")
+    pdfmetrics.registerFont(TTFont(FN,  FONT_PATH, subfontIndex=0) if ttc else TTFont(FN,  FONT_PATH))
+    try:    pdfmetrics.registerFont(TTFont(FNB, FONT_PATH, subfontIndex=1) if ttc else TTFont(FNB, FONT_PATH))
+    except: pdfmetrics.registerFont(TTFont(FNB, FONT_PATH, subfontIndex=0) if ttc else TTFont(FNB, FONT_PATH))
+    from matplotlib import font_manager as fm
+    fm.fontManager.addfont(FONT_PATH)
+    added = [f.name for f in fm.fontManager.ttflist if f.fname == FONT_PATH]
+    plt.rcParams.update({"font.family": added[0] if added else "DejaVu Sans",
+                         "axes.unicode_minus": False, "font.size": 8.5})
+
+def resolve_files(root):
+    global FILES
+    km = {
+        "platform":      "平台报表_USD_近4周",
+        "daily":         "日报-大盘日报_USD_近4周",
+        "retention":     ["整体","首充留存"],
+        "agent_plat":    "平台报表-总代_USD_近21天",
+        "agent_promo":   "推广报表-总代_USD_近21天",
+        "agent_ret":     "首充充值留存",
+        "vip":           "VIP报表_USD",
+        "dt_tw":         f"top提款用户_全量数据_{THIS_WEEK[0]}",
+        "dt_lw":         f"top提款用户_全量数据_{LAST_WEEK[0]}",
+        "dc_tw":         f"头部充值用户_全量数据_{THIS_WEEK[0]}",
+        "dc_lw":         f"头部充值用户_全量数据_{LAST_WEEK[0]}",
+        "pref_tw":       f"本周top500提款用户游戏偏好_全量数据_{THIS_WEEK[0]}",
+        "pref_lw":       f"上周top500提款用户游戏偏好_全量数据_{LAST_WEEK[0]}",
+        "mfr":           "厂商投注数据_全量数据",
+        "game_tw":       "游戏报表-详情_USD_本周",
+        "game_lw":       "游戏报表-详情_USD_上周",
+        "gift":          f"各赠送活动_全量数据_{THIS_WEEK[0]}",
+        "tool_map":      "道具对应活动",
+        "vip_ret_chg":   "VIP充值-充值_近28天",
+        "vip_ret_act":   "VIP充值-活跃_近28天",
+        "tool_tw":       "本周道具使用情况",
+        "tool_lw":       "上周道具使用情况",
+        "first_dep_ret": "首次充值活动用户充值留存情况",
+    }
+    print(f"  ▶ 数据目录：{root}"); fail = 0
+    for key, kw in km.items():
+        kws = kw if isinstance(kw, list) else [kw]
+        hits = [h for h in root.rglob("*")
+                if h.is_file() and not h.name.startswith("~$") and all(k in h.name for k in kws)]
+        if not hits: print(f"     ❌ [{key:15s}] 找不到含{kws}"); fail += 1
+        else:
+            p = max(hits, key=lambda h: h.stat().st_mtime); FILES[key] = p
+            print(f"     ✅ [{key:15s}] {p.name}")
+    if fail: raise FileNotFoundError(f"共{fail}个文件未找到")
+    print(f"  ▶ 全部{len(km)}个文件匹配成功\n")
+
+# ── PDF 样式工具 ─────────────────────────────────────────
+def P(txt, sz=8.5, bold=False, clr=colors.black, align=TA_LEFT):
+    st = ParagraphStyle("x", fontName=FNB if bold else FN, fontSize=sz,
+                        textColor=clr, alignment=align, leading=sz*1.4,
+                        spaceAfter=0, spaceBefore=0)
+    return Paragraph(str(txt), st)
+
+def sec_title(text, clr=C_BLUE):
+    return KeepTogether([Spacer(1,6),
+        Table([[P(text,13,True,C_WHITE)]], colWidths=[PW-2*MARGIN],
+              style=TableStyle([("BACKGROUND",(0,0),(-1,-1),clr),
+                                ("TOPPADDING",(0,0),(-1,-1),7),("BOTTOMPADDING",(0,0),(-1,-1),7),
+                                ("LEFTPADDING",(0,0),(-1,-1),14)])),
+        Spacer(1,8)])
+
+def sub_title(text):
+    return KeepTogether([Spacer(1,5), HRFlowable(width="100%",thickness=1.5,color=C_BLUE2),
+                         Spacer(1,3), P(f"■  {text}",10,True,C_DARK), Spacer(1,6)])
+
+def insight_box(lines, clr=C_GREEN):
+    bkg = (colors.HexColor("#f0fdf4") if clr==C_GREEN else
+           colors.HexColor("#fffbeb") if clr==C_AMBER else
+           colors.HexColor("#fef2f2"))
+    rows = [[P(f"◆ {l}",8.5,False,C_DARK)] for l in lines]
+    return KeepTogether([
+        Table(rows, colWidths=[PW-2*MARGIN], style=TableStyle([
+            ("BACKGROUND",(0,0),(-1,-1),bkg), ("BOX",(0,0),(-1,-1),1,clr),
+            ("LINEBELOW",(0,0),(-1,-2),0.3,C_BORDER),
+            ("LEFTPADDING",(0,0),(-1,-1),10), ("RIGHTPADDING",(0,0),(-1,-1),10),
+            ("TOPPADDING",(0,0),(-1,-1),4),   ("BOTTOMPADDING",(0,0),(-1,-1),4),
+        ])), Spacer(1,8)])
+
+def dtable(headers, rows, widths=None, zebra=True, hdr_clr=None, fsize=6.8, extra_style=None):
+    full = PW - 2*MARGIN
+    if not widths: widths = [full/len(headers)]*len(headers)
+    if hdr_clr is None: hdr_clr = C_DARK
+    st = TableStyle([
+        ("BACKGROUND",(0,0),(-1,0),hdr_clr), ("TEXTCOLOR",(0,0),(-1,0),C_WHITE),
+        ("FONTNAME",(0,0),(-1,0),FNB),       ("FONTNAME",(0,1),(-1,-1),FN),
+        ("FONTSIZE",(0,0),(-1,-1),fsize),
+        ("TOPPADDING",(0,0),(-1,-1),2),      ("BOTTOMPADDING",(0,0),(-1,-1),2),
+        ("LEFTPADDING",(0,0),(-1,-1),2),     ("RIGHTPADDING",(0,0),(-1,-1),2),
+        ("GRID",(0,0),(-1,-1),0.3,C_BORDER),("VALIGN",(0,0),(-1,-1),"MIDDLE"),
+    ])
+    if zebra:
+        for i in range(1, len(rows)+1, 2): st.add("BACKGROUND",(0,i),(-1,i),C_ROW)
+    if extra_style:
+        for cmd in extra_style: st.add(*cmd)
+    hrow = [P(h,fsize,True,C_WHITE,TA_CENTER) for h in headers]
+    body = []
+    for row in rows:
+        body.append([
+            P(str(c[0]),fsize, c[1] if len(c)>1 else False,
+              c[2] if len(c)>2 else colors.black,
+              c[3] if len(c)>3 else TA_LEFT)
+            if isinstance(c,(list,tuple)) else P(str(c),fsize)
+            for c in row
+        ])
+    return Table([hrow]+body, colWidths=widths, style=st, hAlign="LEFT", repeatRows=1)
+
+def cell(t,bold=False,clr=colors.black,align=TA_LEFT): return (t,bold,clr,align)
+def rc(v, gup=True, d=1, good_up=None):
+    if good_up is not None: gup=good_up
+    c = C_GREEN if (v>0)==gup else C_RED
+    return cell(f"{'+' if v>=0 else ''}{v:.{d}f}%",False,c,TA_RIGHT)
+def gclr(v,t=0): return C_GREEN if v>t else (C_RED if v<t else C_GRAY)
+def fret(v): return "-" if v is None or (isinstance(v,float) and np.isnan(v)) else f"{v:.1f}%"
+
+def kpi_card4(items, cols=4):
+    fw = (PW-2*MARGIN)/cols - 4
+    rows, row = [], []
+    for label,tv,lv,chg,_ in items:
+        pclr = C_GREEN if chg>=0 else C_RED
+        inner = Table([[P(label,7.5,False,C_GRAY)],[P(str(tv),14,True,C_DARK)],
+                       [P(f"上周：{lv}",7.5,False,C_GRAY)],
+                       [P(f"{'+' if chg>=0 else ''}{chg:.1f}%",8,True,pclr)]],
+                      colWidths=[fw],
+                      style=TableStyle([("BACKGROUND",(0,0),(-1,-1),C_LGRAY),
+                                        ("BOX",(0,0),(-1,-1),0.5,C_BORDER),
+                                        ("LEFTPADDING",(0,0),(-1,-1),8),
+                                        ("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),5)]))
+        row.append(inner)
+        if len(row)==cols: rows.append(row); row=[]
+    if row:
+        while len(row)<cols: row.append(Spacer(fw,1))
+        rows.append(row)
+    t = Table(rows, colWidths=[(PW-2*MARGIN)/cols]*cols, hAlign="LEFT", vAlign="TOP")
+    t.setStyle(TableStyle([("VALIGN",(0,0),(-1,-1),"TOP"),
+                            ("LEFTPADDING",(0,0),(-1,-1),2),("RIGHTPADDING",(0,0),(-1,-1),2),
+                            ("TOPPADDING",(0,0),(-1,-1),2),("BOTTOMPADDING",(0,0),(-1,-1),2)]))
+    return t
+# ════════════════════════════════════════════════════════════════
+# 数据加载
+# ════════════════════════════════════════════════════════════════
+
+def load_platform():
+    df = pd.read_excel(FILES["platform"]); df["日期"] = df["日期"].astype(str)
+    df = df.sort_values("日期"); df = to_num(df)
+    tw = df[df["日期"].between(*THIS_WEEK)]; lw = df[df["日期"].between(*LAST_WEEK)]
+    dd = pd.read_excel(FILES["daily"]); dd["日期"] = dd["日期"].astype(str); dd = to_num(dd)
+    tw_d = dd[dd["日期"].between(*THIS_WEEK)]; lw_d = dd[dd["日期"].between(*LAST_WEEK)]
+    K = {}
+    for c in ["注册人数","首充人数","一级首充人数","活跃人数","充值人数","充值金额",
+              "提现金额","提现人数","充提差","投注金额","投注人数","公司输赢","总赠送金额","首充金额"]:
+        if c not in df.columns: continue
+        K[f"tw_{c}"] = tw[c].sum(); K[f"lw_{c}"] = lw[c].sum()
+        K[f"pct_{c}"] = pct(K[f"tw_{c}"], K[f"lw_{c}"])
+    for c in ["全量Arppu","首充Arppu","老用户ARPPU"]:
+        if c not in df.columns: continue
+        K[f"tw_{c}"] = tw[c].mean(); K[f"lw_{c}"] = lw[c].mean()
+        K[f"pct_{c}"] = pct(K[f"tw_{c}"], K[f"lw_{c}"])
+    for c in ["充提差比","盈亏率","首充转化率","首充当日复充率","首充次日复充率",
+              "首充次日复投率","活跃用户付费率","总赠送充值比"]:
+        if c not in df.columns: continue
+        drop = TRUNCATE.get(c, 0)
+        K[f"tw_{c}"] = trunc_mean(tw[c], drop); K[f"lw_{c}"] = lw[c].mean()
+        K[f"pct_{c}"] = pct(K[f"tw_{c}"], K[f"lw_{c}"])
+    K["tw_真实消耗"] = tw_d["真实消耗"].iloc[:-1].sum() if len(tw_d)>1 else tw_d["真实消耗"].sum()
+    K["lw_真实消耗"] = lw_d["真实消耗"].sum()
+    K["pct_真实消耗"] = pct(K["tw_真实消耗"], K["lw_真实消耗"])
+    K["tw_赠送充值比"] = K["tw_总赠送金额"]/K["tw_充值金额"]*100
+    K["lw_赠送充值比"] = K["lw_总赠送金额"]/K["lw_充值金额"]*100
+    K["pct_赠送充值比"] = pct(K["tw_赠送充值比"], K["lw_赠送充值比"])
+    last14 = df.tail(14)
+    trend = {"dates": [f"{d[4:6]}/{d[6:]}" for d in last14["日期"].tolist()],
+             "充值": last14["充值金额"].tolist(), "提现": last14["提现金额"].tolist(),
+             "充提差比": last14["充提差比"].tolist(), "公司输赢": last14["公司输赢"].tolist(),
+             "首充": last14["首充人数"].tolist(), "注册": last14["注册人数"].tolist()}
+    return K, trend
+
+
+def load_dashboard_retention():
+    """
+    大盘留存 — 来源：日报-大盘日报_**
+      首充2日复充率 → 次留(lag=1)
+      首充3日复充率 → 3留(lag=2)
+      首充7日复充率 → 7留(lag=6)
+      首充30日复充率→ 30留(lag=29)
+    截止日期由 ret_end(week_start, lag) 决定，剔除不完整天数
+    """
+    dd = pd.read_excel(FILES["daily"]); dd["日期"] = dd["日期"].astype(str)
+    specs = [("nd","首充2日复充率",1),("td","首充3日复充率",2),
+             ("sd","首充7日复充率",6),("30d","首充30日复充率",29)]
+    for _,col,_ in specs:
+        if col in dd.columns:
+            dd[col] = pd.to_numeric(dd[col].astype(str).str.replace("%","").str.strip(), errors="coerce")
+    R = {}
+    for key, col, lag in specs:
+        for ws, we, prefix in [(THIS_WEEK[0],THIS_WEEK[1],"tw_"), (LAST_WEEK[0],LAST_WEEK[1],"lw_")]:
+            ec = ret_end(ws, lag)
+            sub = dd[(dd["日期"]>=ws) & (dd["日期"]<=we)]
+            if ec: sub = sub[sub["日期"]<=ec]
+            R[f"{prefix}{key}"] = float(sub[col].mean()) if len(sub) and col in sub else np.nan
+        R[f"tw_{key}_end"] = ret_end(THIS_WEEK[0], lag)
+        R[f"lw_{key}_end"] = ret_end(LAST_WEEK[0], lag)
+    return R
+
+
+def load_weekly_retention():
+    """整体首充留存（近4周），列：第1日=次留, 第2日=3留, 第6日=7留"""
+    df = pd.read_csv(FILES["retention"])
+    daily = df[~df["初始事件的发生时间"].str.contains("阶段值", na=False)].copy()
+    daily["ds"] = daily["初始事件的发生时间"].str.extract(r"(\d{4}-\d{2}-\d{2})")
+    dr = daily[daily["指标"]=="留存率"].copy()
+    du = daily[daily["指标"]=="留存人数"].copy()
+    for c in ["第1日","第2日","第3日","第6日","第7日"]:
+        if c in dr.columns:
+            dr[c] = pd.to_numeric(dr[c].astype(str).str.replace("%","").str.strip(), errors="coerce")
+    def _d(s): return datetime.strptime(s,"%Y%m%d")
+    def _f(d): return d.strftime("%Y-%m-%d")
+    def _l(s,e): return f"{s.strftime('%m/%d')}-{e.strftime('%m/%d')}"
+    tw_s,tw_e = _d(THIS_WEEK[0]),_d(THIS_WEEK[1])
+    lw_s,lw_e = _d(LAST_WEEK[0]),_d(LAST_WEEK[1])
+    w2e = lw_s-timedelta(days=1); w2s = w2e-timedelta(days=6)
+    w1e = w2s-timedelta(days=1); w1s = w1e-timedelta(days=6)
+    weeks = [(f"第1周\n{_l(w1s,w1e)}",_f(w1s),_f(w1e)),
+             (f"第2周\n{_l(w2s,w2e)}",_f(w2s),_f(w2e)),
+             (f"上周\n{_l(lw_s,lw_e)}",_f(lw_s),_f(lw_e)),
+             (f"本周\n{_l(tw_s,tw_e)}",_f(tw_s),_f(tw_e))]
+    result = []
+    for wk,s,e in weeks:
+        mr = dr[(dr["ds"]>=s)&(dr["ds"]<=e)]; mu = du[(du["ds"]>=s)&(du["ds"]<=e)]
+        row = {"week": wk, "users": mu["充值成功事件用户数"].sum()}
+        for col in ["第1日","第2日","第3日","第6日","第7日"]:
+            rs = mr[col].values if col in mr.columns else np.array([])
+            us = mu["充值成功事件用户数"].values
+            if len(rs)>0 and len(rs)==len(us):
+                v = ~np.isnan(rs)
+                row[col] = float(np.average(rs[v],weights=us[v])) if v.sum()>0 else np.nan
+            else: row[col] = float(np.nanmean(rs)) if len(rs)>0 else np.nan
+        result.append(row)
+    return result
+
+
+def load_agents():
+    dp = pd.read_excel(FILES["agent_plat"]); dr = pd.read_excel(FILES["agent_promo"])
+    dp["日期"]=dp["日期"].astype(str); dr["日期"]=dr["日期"].astype(str)
+    dp=to_num(dp); dr=to_num(dr)
+    tw_p=dp[dp["日期"].between(*THIS_WEEK)]; lw_p=dp[dp["日期"].between(*LAST_WEEK)]
+    tw_r=dr[dr["日期"].between(*THIS_WEEK)]; lw_r=dr[dr["日期"].between(*LAST_WEEK)]
+    sa=["充值金额","提现金额","充提差","首充金额","首充人数","注册人数","充值人数","投注金额","公司输赢","总赠送金额"]
+    def agg_p(d):
+        g=d.groupby(["总代.ID","总代.名称"]).agg({c:"sum" for c in sa if c in d.columns}).reset_index()
+        for c in ["充提差比","首充次日充值留存"]:
+            if c in d.columns: g=g.merge(d.groupby("总代.ID")[c].mean().rename(c),on="总代.ID",how="left")
+        g["充提差率"]=g["充提差"]/g["充值金额"]*100; return g
+    tw_pa=agg_p(tw_p); lw_pa=agg_p(lw_p)
+    sr=["总消耗","注册人数","首充人数","一级首充人数","一级首充金额"]
+    def agg_r(d):
+        g=d.groupby("总代.ID").agg({c:"sum" for c in sr if c in d.columns}).reset_index()
+        g["一级首充成本"]=g["总消耗"]/g["一级首充人数"].replace(0,np.nan); return g
+    tw_ra=agg_r(tw_r); lw_ra=agg_r(lw_r)
+    lw_ra["lw_fc_cost"]=lw_ra["总消耗"]/lw_ra["一级首充人数"].replace(0,np.nan)
+    m=tw_pa.merge(lw_pa[["总代.ID","充值金额","注册人数","充提差率"]].rename(
+        columns={"充值金额":"lw_充值","注册人数":"lw_注册","充提差率":"lw_充提差率"}),on="总代.ID",how="left")
+    m=m.merge(tw_ra[["总代.ID","总消耗","一级首充成本","一级首充人数"]],on="总代.ID",how="left")
+    m=m.merge(lw_ra[["总代.ID","lw_fc_cost"]],on="总代.ID",how="left")
+    m["注册环比"]=pct_vec(m["注册人数"],m["lw_注册"])
+    return m.sort_values("充值金额",ascending=False)
+
+
+def load_agent_ret():
+    """
+    总代留存 — 来源：首充充值留存_**
+    该表：当日=第0日, 1日=第1日, 2日=第2日(=次留lag1), 3日=第3日(=3留lag2), 6日=第6日(=7留lag6)
+    返回：(ret_dict, ends_dict)
+    """
+    df = pd.read_csv(FILES["agent_ret"])
+    df["_d"] = df["初始事件发生时间"].astype(str).str.extract(r"(\d{4}-\d{2}-\d{2})")[0].str.replace("-","")
+    for c in ["2日","3日","6日"]:
+        df[c] = pd.to_numeric(df[c].astype(str).str.replace("%","").str.strip(), errors="coerce")
+    df["首充用户数"] = pd.to_numeric(df["首充用户数"], errors="coerce").fillna(0)
+    df["总代"] = pd.to_numeric(df["总代"], errors="coerce")
+    daily = df[df["_d"].notna()&df["_d"].str.match(r"^\d{8}$")&(df["指标"]=="留存率")].copy()
+
+    ends = {}
+    for key, lag in [("nd",1),("3d",2),("7d",6)]:
+        ends[f"tw_{key}_end"] = ret_end(THIS_WEEK[0], lag)
+        ends[f"lw_{key}_end"] = ret_end(LAST_WEEK[0], lag)
+
+    def _slice(ws, we, ec):
+        sub = daily[daily["_d"].between(ws,we)]
+        if ec: sub = sub[sub["_d"] <= min(ec,we)]
+        return sub
+
+    slices = {
+        "tw_nd": _slice(THIS_WEEK[0], THIS_WEEK[1], ends["tw_nd_end"]),
+        "tw_3d": _slice(THIS_WEEK[0], THIS_WEEK[1], ends["tw_3d_end"]),
+        "tw_7d": _slice(THIS_WEEK[0], THIS_WEEK[1], ends["tw_7d_end"]),
+        "lw_nd": _slice(LAST_WEEK[0], LAST_WEEK[1], ends["lw_nd_end"]),
+        "lw_3d": _slice(LAST_WEEK[0], LAST_WEEK[1], ends["lw_3d_end"]),
+        "lw_7d": _slice(LAST_WEEK[0], LAST_WEEK[1], ends["lw_7d_end"]),
+    }
+    col_map = {"tw_nd":"2日","tw_3d":"3日","tw_7d":"6日",
+               "lw_nd":"2日","lw_3d":"3日","lw_7d":"6日"}
+
+    def _wavg_by_agent(df_sub, col):
+        res = {}
+        for nm, grp in df_sub.groupby("name_总代"):
+            v = wavg_series(grp[col], grp["首充用户数"])
+            if not np.isnan(v): res[nm] = v
+        return res
+
+    per_agent = {k: _wavg_by_agent(slices[k], col_map[k]) for k in slices}
+
+    # id_map
+    id_map = {}
+    for nm, grp in daily.groupby("name_总代"):
+        vals = grp["总代"].dropna().values
+        if len(vals): id_map[nm] = int(vals[0])
+
+    all_names = set().union(*[set(v) for v in per_agent.values()])
+    ret = {}
+    for nm in all_names:
+        ret[nm] = {k: per_agent[k].get(nm, np.nan) for k in per_agent}
+        ret[nm]["agent_id"] = id_map.get(nm)
+    return ret, ends
+
+
+def load_vip():
+    df=pd.read_excel(FILES["vip"]); df["日期"]=df["日期"].astype(str)
+    num=["活跃人数","投注人数","投注局数","投注金额","充值人数","充值金额","提现人数","提现金额"]
+    df=to_num(df,num)
+    tw=df[df["日期"].between(*THIS_WEEK)]; lw=df[df["日期"].between(*LAST_WEEK)]
+    return tw.groupby("VIP等级")[num].sum(), lw.groupby("VIP等级")[num].sum()
+
+def load_vip_retention():
+    res={}
+    for fk,rt in [("vip_ret_chg","chg"),("vip_ret_act","act")]:
+        df=pd.read_csv(FILES[fk])
+        df["ds"]=df["初始事件发生时间"].astype(str).str.extract(r"(\d{4}-\d{2}-\d{2})")
+        df["yyyymmdd"]=df["ds"].str.replace("-","")
+        for c in ["1日","2日","3日","7日"]:
+            df[c]=pd.to_numeric(df[c].astype(str).str.replace("%","").str.strip(),errors="coerce")
+        df["n"]=pd.to_numeric(df["充值成功事件用户数"],errors="coerce")
+        df["vip"]=pd.to_numeric(df["vip_level"],errors="coerce")
+        daily=df[(df["指标"]=="留存率")&df["yyyymmdd"].notna()&df["vip"].notna()]
+        tw=daily[daily["yyyymmdd"].between(*THIS_WEEK)]; lw=daily[daily["yyyymmdd"].between(*LAST_WEEK)]
+        def wavg(d,col):
+            r={}
+            for v,g in d.groupby("vip"):
+                s=g[g[col].notna()]
+                if len(s): r[int(v)]=float(np.average(s[col].values,weights=s["n"].values))
+            return r
+        res[rt]={"tw":{c:wavg(tw,c) for c in ["1日","2日","3日","7日"]},
+                 "lw":{c:wavg(lw,c) for c in ["1日","2日","3日","7日"]}}
+    return res
+
+def load_top_users():
+    dc_tw=pd.read_csv(FILES["dc_tw"]); dc_lw=pd.read_csv(FILES["dc_lw"])
+    dt_tw=pd.read_csv(FILES["dt_tw"]); dt_lw=pd.read_csv(FILES["dt_lw"])
+    for df in [dc_tw,dc_lw,dt_tw,dt_lw]:
+        for c in ["充值金额","提款金额","公司输赢","活动奖励","投注金额"]:
+            if c in df.columns: df[c]=pd.to_numeric(df[c],errors="coerce")
+    dp=pd.read_excel(FILES["platform"]); dp["日期"]=dp["日期"].astype(str); dp=to_num(dp)
+    tw_p=dp[dp["日期"].between(*THIS_WEEK)]
+    total_c=tw_p["充值金额"].sum(); total_t=tw_p["提现金额"].sum(); actual_cr=(total_c-total_t)/total_c*100
+    tot_c=dc_tw["充值金额"].sum(); tot_t=dt_tw["提款金额"].sum()
+    dep_t,wdr_t=[],[]
+    for t in [1,10,50,100,200,500]:
+        tw=dc_tw.head(t); lw=dc_lw.head(t)
+        tc=tw["充值金额"].sum(); tt=tw["提款金额"].sum(); lc=lw["充值金额"].sum(); lt=lw["提款金额"].sum()
+        dep_t.append({"tier":f"Top{t}","tw_chg":tc,"lw_chg":lc,"tw_avg":tc/t,"lw_avg":lc/t,
+            "tw_cr":(tc-tt)/tc*100 if tc>0 else 0,"lw_cr":(lc-lt)/lc*100 if lc>0 else 0,
+            "tw_win":tw["公司输赢"].sum(),"占全量":tc/tot_c*100})
+        tw2=dt_tw.head(t); lw2=dt_lw.head(t)
+        tt2=tw2["提款金额"].sum(); tc2=tw2["充值金额"].sum(); lt2=lw2["提款金额"].sum(); lc2=lw2["充值金额"].sum()
+        wns=(tw2["公司输赢"]<0).sum()
+        act=tw2["活动奖励"].sum()/(tc2+tw2["活动奖励"].sum())*100 if (tc2+tw2["活动奖励"].sum())>0 else 0
+        excl_c=total_c-tc2; excl_t=total_t-tt2
+        excl_cr=(excl_c-excl_t)/excl_c*100 if excl_c>0 else 0
+        wdr_t.append({"tier":f"Top{t}","tw_tx":tt2,"lw_tx":lt2,"tw_avg":tt2/t,"lw_avg":lt2/t,
+            "tw_cr":(tc2-tt2)/tc2*100 if tc2>0 else 0,"lw_cr":(lc2-lt2)/lc2*100 if lc2>0 else 0,
+            "赢家":wns,"总数":t,"赢家率":wns/t*100,"活动占比":act,"占全量":tt2/tot_t*100,"大盘影响":excl_cr-actual_cr})
+    return dep_t,wdr_t,dc_tw.head(200),dt_tw.head(20)
+
+def load_pref():
+    df=pd.read_csv(FILES["pref_tw"]); dl=pd.read_csv(FILES["pref_lw"])
+    df["阶段汇总"]=df["阶段汇总"].apply(clean); dl["阶段汇总"]=dl["阶段汇总"].apply(clean)
+    bet=df[df["分析指标"]=="投注金额"]; win=df[df["分析指标"]=="公司输赢"]; bl=dl[dl["分析指标"]=="投注金额"]
+    gb=bet.groupby(["show_name_厂商标签id","游戏名称"])["阶段汇总"].sum().rename("本周投注")
+    gw=win.groupby(["show_name_厂商标签id","游戏名称"])["阶段汇总"].sum().rename("公司输赢")
+    gl=bl.groupby(["show_name_厂商标签id","游戏名称"])["阶段汇总"].sum().rename("上周投注")
+    gu=bet.groupby(["show_name_厂商标签id","游戏名称"])["账户ID"].nunique().rename("玩家数")
+    g=pd.concat([gb,gw,gl,gu],axis=1).reset_index()
+    g["占比"]=g["本周投注"]/g["本周投注"].sum()*100; g["盈亏率"]=g["公司输赢"]/g["本周投注"]*100
+    g["投注环比"]=(g["本周投注"]-g["上周投注"])/g["上周投注"].abs()*100
+    mfr=bet.groupby("show_name_厂商标签id")["阶段汇总"].sum().sort_values(ascending=False)
+    return g.sort_values("本周投注",ascending=False).head(20), mfr
+
+def load_games():
+    tw=pd.read_excel(FILES["game_tw"]); lw=pd.read_excel(FILES["game_lw"])
+    for df in [tw,lw]:
+        for c in ["投注人数","投注局数","投注金额","公司输赢"]:
+            if c in df.columns: df[c]=df[c].apply(clean)
+    tot=tw["投注金额"].sum()
+    gt=tw.groupby(["游戏厂商标签.名称","游戏.名称"]).agg(
+        投注人数=("投注人数","sum"),投注局数=("投注局数","sum"),
+        投注金额=("投注金额","sum"),公司输赢=("公司输赢","sum")).reset_index()
+    gl=lw.groupby("游戏.名称").agg(投注金额=("投注金额","sum"),公司输赢=("公司输赢","sum")).reset_index().rename(
+        columns={"投注金额":"lw_投注","公司输赢":"lw_输赢"})
+    gt["人均局数"]=gt["投注局数"]/gt["投注人数"]; gt["人均金额"]=gt["投注金额"]/gt["投注人数"]
+    gt["盈亏率"]=gt["公司输赢"]/gt["投注金额"]*100; gt["占比"]=gt["投注金额"]/tot*100
+    gt["厂商简称"]=gt["游戏厂商标签.名称"].apply(shorten_mfr)
+    gm=gt.merge(gl,on="游戏.名称",how="left")
+    gm["投注环比"]=(gm["投注金额"]-gm["lw_投注"])/gm["lw_投注"].abs()*100
+    gm["lw_盈亏率"]=gm["lw_输赢"]/gm["lw_投注"]*100
+    return gm.sort_values("投注金额",ascending=False).head(30)
+
+def load_mfr():
+    df=pd.read_csv(FILES["mfr"]); df=df.rename(columns={"盈利率":"盈亏率"})
+    df=df[df["时间"]!="阶段汇总"].copy(); df["时间"]=df["时间"].astype(str).str.replace("-","")
+    for c in ["投注局数","投注人数","投注金额","公司输赢","盈亏率"]:
+        if c in df.columns: df[c]=df[c].apply(clean)
+    tw=df[df["时间"].between(*THIS_WEEK)]; lw=df[df["时间"].between(*LAST_WEEK)]
+    def agg(d):
+        g=d.groupby("show_name_厂商标签id").agg(
+            投注局数=("投注局数","sum"),投注人数=("投注人数","sum"),
+            投注金额=("投注金额","sum"),公司输赢=("公司输赢","sum")).reset_index()
+        g["日均投注人数"]=(g["投注人数"]/7).round(0).astype(int)
+        g["人均局数"]=g["投注局数"]/g["投注人数"]; g["人均金额"]=g["投注金额"]/g["投注人数"]
+        g["盈亏率"]=g["公司输赢"]/g["投注金额"]*100; g["占比"]=g["投注金额"]/g["投注金额"].sum()*100; return g
+    tg=agg(tw); lg=agg(lw)
+    mg=tg.merge(lg[["show_name_厂商标签id","投注金额","占比","盈亏率","日均投注人数"]].rename(
+        columns={"投注金额":"lw_投注","占比":"lw_占比","盈亏率":"lw_盈亏率","日均投注人数":"lw_日均人数"}),
+        on="show_name_厂商标签id",how="left")
+    mg["投注环比"]=(mg["投注金额"]-mg["lw_投注"])/mg["lw_投注"].abs()*100
+    mg["厂商显示名"]=mg["show_name_厂商标签id"].apply(shorten_mfr)
+    return mg.sort_values("投注金额",ascending=False)
+
+def load_mfr_game_delta():
+    tw=pd.read_excel(FILES["game_tw"]); lw=pd.read_excel(FILES["game_lw"])
+    for df in [tw,lw]:
+        for c in ["投注金额","公司输赢"]:
+            if c in df.columns: df[c]=df[c].apply(clean)
+    gt=tw.groupby(["游戏厂商标签.名称","游戏.名称"]).agg(投注金额=("投注金额","sum")).reset_index()
+    gl=lw.groupby(["游戏厂商标签.名称","游戏.名称"]).agg(投注金额=("投注金额","sum")).reset_index().rename(columns={"投注金额":"lw_投注"})
+    m=gt.merge(gl,on=["游戏厂商标签.名称","游戏.名称"],how="outer").fillna(0); m["delta"]=m["投注金额"]-m["lw_投注"]
+    mfr_tw=tw.groupby("游戏厂商标签.名称")["投注金额"].sum().sort_values(ascending=False)
+    res={}
+    for n in mfr_tw.head(10).index:
+        sub=m[m["游戏厂商标签.名称"]==n].sort_values("delta",ascending=False)
+        res[n]={"up":sub.head(1),"dn":sub.tail(1)}
+    return res
+
+def load_activities():
+    df=pd.read_csv(FILES["gift"])
+    for c in ["赠送金额","赠送金额.1","赠送人数","赠送人数.1"]:
+        if c in df.columns: df[c]=pd.to_numeric(df[c],errors="coerce").fillna(0)
+    ag=df.groupby(["账变opt_code","name_账变opt_id"]).agg(
+        赠送金额=("赠送金额","sum"),lw_赠=("赠送金额.1","sum"),
+        赠送人数=("赠送人数","sum"),lw_人数=("赠送人数.1","sum")).reset_index()
+    ag["环比"]=(ag["赠送金额"]-ag["lw_赠"])/ag["lw_赠"].replace(0,np.nan).abs()*100
+    tot=ag["赠送金额"].sum(); ag["占比"]=ag["赠送金额"]/tot*100; ag["人均"]=ag["赠送金额"]/ag["赠送人数"].replace(0,np.nan)
+    ag["日均_本"]=ag["赠送人数"]/7; ag["日均_上"]=ag["lw_人数"]/7
+    ag["人数环比"]=(ag["赠送人数"]-ag["lw_人数"])/ag["lw_人数"].replace(0,np.nan)*100
+    return ag.sort_values("赠送金额",ascending=False), tot
+
+def load_tool_data():
+    tw=pd.read_csv(FILES["tool_tw"]); lw=pd.read_csv(FILES["tool_lw"])
+    tm=pd.read_excel(FILES["tool_map"]); tm["道具ID"]=tm["道具ID"].astype(str).str.strip()
+    tm=tm.drop_duplicates(subset="道具ID",keep="first")
+    for df in [tw,lw]:
+        df.columns=df.columns.str.strip().str.replace("\ufeff","")
+        df["道具ID"]=df["道具ID"].astype(str).str.strip().str.replace('"',"")
+        for c in ["道具发放(步骤1)","道具使用(步骤2)"]:
+            df[c]=pd.to_numeric(df[c].astype(str).str.replace(",",""),errors="coerce")
+        df["步骤2 转化"]=pd.to_numeric(df["步骤2 转化"].astype(str).str.replace("%",""),errors="coerce")
+    tw=tw[tw["道具ID"]!="总体"].copy(); lw=lw[lw["道具ID"]!="总体"].copy()
+    m=tw.rename(columns={"道具发放(步骤1)":"本周发放","道具使用(步骤2)":"本周使用","步骤2 转化":"本周使用率"}
+    ).merge(lw[["道具ID","道具发放(步骤1)","道具使用(步骤2)","步骤2 转化"]].rename(
+        columns={"道具发放(步骤1)":"上周发放","道具使用(步骤2)":"上周使用","步骤2 转化":"上周使用率"}),
+        on="道具ID",how="outer").fillna(0)
+    m=m.merge(tm[["道具ID","活动","备注"]],on="道具ID",how="left")
+    m["活动"]=m["活动"].fillna("其他"); m["备注"]=m["备注"].fillna(m["道具ID"])
+    m["发放环比"]=(m["本周发放"]-m["上周发放"])/m["上周发放"].replace(0,np.nan)*100
+    m["使用环比"]=(m["本周使用"]-m["上周使用"])/m["上周使用"].replace(0,np.nan)*100
+    return m.sort_values("本周发放",ascending=False)
+
+def load_first_dep_ret():
+    df=pd.read_csv(FILES["first_dep_ret"])
+    df.columns=df.columns.str.strip().str.replace("\ufeff","")
+    df["_d"]=df["初始事件发生时间"].astype(str).str.extract(r"(\d{4}-\d{2}-\d{2})")[0]
+    df["_yyyymmdd"]=df["_d"].str.replace("-","")
+    for c in ["当日","1日","2日","3日","4日","5日","6日","7日"]:
+        if c in df.columns:
+            df[c]=pd.to_numeric(df[c].astype(str).str.replace("%","").str.strip(),errors="coerce")
+    df["账变事件用户数"]=pd.to_numeric(df["账变事件用户数"],errors="coerce").fillna(0)
+    stage=df[df["初始事件发生时间"]=="阶段值"].copy()
+    daily=df[df["_yyyymmdd"].notna()&df["_yyyymmdd"].str.match(r"^\d{8}$")].copy()
+    rr=daily[daily["指标"]=="留存率"].reset_index(drop=True)
+    nr=daily[daily["指标"]=="留存人数"].reset_index(drop=True)
+    tw_r=rr[rr["_yyyymmdd"].between(*THIS_WEEK)].reset_index(drop=True)
+    lw_r=rr[rr["_yyyymmdd"].between(*LAST_WEEK)].reset_index(drop=True)
+    tw_n=nr[nr["_yyyymmdd"].between(*THIS_WEEK)].reset_index(drop=True)
+    lw_n=nr[nr["_yyyymmdd"].between(*LAST_WEEK)].reset_index(drop=True)
+    def wa(rd,nd,col):
+        if col not in rd.columns or len(rd)==0: return np.nan
+        rv=rd[col].to_numpy(dtype=float,na_value=np.nan); ok=~np.isnan(rv)
+        if not ok.any(): return np.nan
+        w=nd["账变事件用户数"].to_numpy(dtype=float) if len(nd)==len(rd) else np.ones(len(rv))
+        ww=w[ok]; return float(np.nanmean(rv[ok])) if ww.sum()==0 else float(np.average(rv[ok],weights=ww))
+    R={"stage":stage,"tw_users":int(tw_n["账变事件用户数"].sum()),"lw_users":int(lw_n["账变事件用户数"].sum())}
+    for col in ["1日","2日","3日","4日","5日","6日","7日"]:
+        R[f"tw_{col}"]=wa(tw_r,tw_n,col); R[f"lw_{col}"]=wa(lw_r,lw_n,col)
+    dp=pd.read_excel(FILES["platform"]); dp["日期"]=dp["日期"].astype(str); dp=to_num(dp)
+    R["tw_platform_fc"]=int(dp[dp["日期"].between(*THIS_WEEK)]["首充人数"].sum())
+    R["lw_platform_fc"]=int(dp[dp["日期"].between(*LAST_WEEK)]["首充人数"].sum())
+    return R
+
+def load_risk(dt_raw, dc_raw):
+    df=pd.read_csv(FILES["pref_tw"]); df["阶段汇总"]=df["阶段汇总"].apply(clean)
+    ba=df[df["分析指标"]=="投注金额"].groupby("账户ID")["阶段汇总"].sum().rename("游戏_投注金额")
+    wa=df[df["分析指标"]=="公司输赢"].groupby("账户ID")["阶段汇总"].sum().rename("游戏_输赢")
+    bc=df[df["分析指标"]=="投注次数"].groupby("账户ID")["阶段汇总"].sum().rename("投注次数")
+    tg=(df[df["分析指标"]=="投注金额"].sort_values("阶段汇总",ascending=False)
+        .groupby("账户ID").first()[["show_name_厂商标签id","游戏名称","阶段汇总"]]
+        .rename(columns={"show_name_厂商标签id":"主玩厂商","游戏名称":"主玩游戏","阶段汇总":"主游投注"}).reset_index())
+    ug=pd.concat([bc,ba,wa],axis=1).reset_index()
+    ug["每注均额"]=ug["游戏_投注金额"]/ug["投注次数"]; ug=ug.merge(tg,on="账户ID",how="left")
+    top500=dt_raw.head(500).copy(); top500=top500.merge(ug,on="账户ID",how="left")
+    top500["赢家"]=top500["公司输赢"]<0; top500["投充比"]=top500["投注金额"]/top500["充值金额"]
+    hr=top500[top500["公司输赢"]<-10000].sort_values("公司输赢")
+    pp=df[(df["游戏名称"]=="Auto-Roulette 1")&(df["分析指标"]=="投注次数")]["账户ID"].unique()
+    c207=[u for u in pp if str(u).startswith("207")]
+    c207_dt=dt_raw[dt_raw["账户ID"].isin(c207)].sort_values("提款金额",ascending=False) if c207 else pd.DataFrame()
+    sp=top500[((top500["充值金额"]==0)&(top500["提款金额"]>1000))|(top500["投充比"]>150)].sort_values("提款金额",ascending=False)
+    bg=df[df["分析指标"]=="投注金额"].groupby(["show_name_厂商标签id","游戏名称"])["阶段汇总"].sum().rename("投注金额").reset_index()
+    wg=df[df["分析指标"]=="公司输赢"].groupby(["show_name_厂商标签id","游戏名称"])["阶段汇总"].sum().rename("公司输赢").reset_index()
+    ug2=df[df["分析指标"]=="投注次数"].groupby(["show_name_厂商标签id","游戏名称"])["账户ID"].nunique().rename("玩家数").reset_index()
+    wn=df[df["分析指标"]=="公司输赢"].groupby(["show_name_厂商标签id","游戏名称"]).apply(lambda x:(x["阶段汇总"]<0).sum()).rename("赢家数").reset_index()
+    g=bg.merge(wg,on=["show_name_厂商标签id","游戏名称"],how="left").merge(ug2,on=["show_name_厂商标签id","游戏名称"],how="left").merge(wn,on=["show_name_厂商标签id","游戏名称"],how="left")
+    g["盈亏率"]=g["公司输赢"]/g["投注金额"]*100; g["赢家率"]=g["赢家数"]/g["玩家数"]*100; g["人均投注额"]=g["投注金额"]/g["玩家数"]
+    rg=g[(g["公司输赢"]<-5000)|((g["盈亏率"]<-10)&(g["投注金额"]>5000))].sort_values("公司输赢")
+    return hr,c207_dt,c207,sp,g.sort_values("投注金额",ascending=False).head(20),rg,top500
+# ════════════════════════════════════════════════════════════════
+# 图表
+# ════════════════════════════════════════════════════════════════
+SPLIT = 7
+
+def _vline(ax, dates):
+    ax.axvline(SPLIT-.5,color="#94a3b8",ls="--",lw=1,alpha=.7)
+    ax.text(SPLIT-4, ax.get_ylim()[1]*.93,"上周",ha="center",fontsize=7,color="#64748b")
+    ax.text(SPLIT+3, ax.get_ylim()[1]*.93,"本周",ha="center",fontsize=7,color="#1d4ed8")
+
+def chart_trend(trend):
+    fig=plt.figure(figsize=(16,10),facecolor="white")
+    gs=gridspec.GridSpec(2,2,figure=fig,hspace=.45,wspace=.3)
+    dates=trend["dates"]; x=range(len(dates))
+    def sp(a): a.spines["top"].set_visible(False); a.spines["right"].set_visible(False); a.grid(axis="y",alpha=.25)
+    ax=fig.add_subplot(gs[0,0])
+    ax.bar(x,[v/10000 for v in trend["充值"]],color=["#bfdbfe"]*SPLIT+["#1d4ed8"]*SPLIT,width=.7,label="充值")
+    ax.plot(x,[v/10000 for v in trend["提现"]],"-o",color="#dc2626",lw=1.5,ms=3,label="提现")
+    ax.set_title("充值 vs 提现（万USD）",fontsize=9,fontweight="bold"); ax.set_xticks(list(x)); ax.set_xticklabels(dates,rotation=45,fontsize=7)
+    ax.legend(fontsize=7,loc="upper left"); sp(ax); _vline(ax,dates)
+    ax2=fig.add_subplot(gs[0,1])
+    ax2.bar(x,[v/10000 for v in trend["公司输赢"]],color=["#bbf7d0"]*SPLIT+["#059669"]*SPLIT,width=.7)
+    ax2.set_title("公司输赢（万USD）",fontsize=9,fontweight="bold"); ax2.set_xticks(list(x)); ax2.set_xticklabels(dates,rotation=45,fontsize=7); sp(ax2); _vline(ax2,dates)
+    ax3=fig.add_subplot(gs[1,0])
+    ax3.bar(x,trend["首充"],color=["#c7d2fe"]*SPLIT+["#6366f1"]*SPLIT,width=.7,label="首充人数")
+    ax3r=ax3.twinx(); ax3r.plot(x,trend["注册"],"--D",color="#d97706",lw=1.5,ms=3,label="注册人数")
+    ax3.set_title("首充人数（柱）vs 注册人数（线）",fontsize=9,fontweight="bold"); ax3.set_xticks(list(x)); ax3.set_xticklabels(dates,rotation=45,fontsize=7)
+    l1,lb1=ax3.get_legend_handles_labels(); l2,lb2=ax3r.get_legend_handles_labels()
+    ax3.legend(l1+l2,lb1+lb2,fontsize=7,loc="upper left"); ax3.spines["top"].set_visible(False); ax3r.spines["top"].set_visible(False); ax3.grid(axis="y",alpha=.25); ax3.axvline(SPLIT-.5,color="#94a3b8",ls="--",lw=1,alpha=.7)
+    ax4=fig.add_subplot(gs[1,1])
+    ax4.bar(x,trend["充提差比"],color=["#e9d5ff"]*SPLIT+["#7c3aed"]*SPLIT,width=.7)
+    tm=np.mean(trend["充提差比"][SPLIT:]); lm=np.mean(trend["充提差比"][:SPLIT])
+    ax4.axhline(tm,color="#7c3aed",ls=":",lw=1.5); ax4.axhline(lm,color="#94a3b8",ls=":",lw=1.2)
+    ax4.text(len(dates)-.5,tm+.3,f"本周均{tm:.1f}%",fontsize=7,color="#7c3aed",ha="right")
+    ax4.text(.5,lm+.3,f"上周均{lm:.1f}%",fontsize=7,color="#64748b",ha="left")
+    ax4.set_title("充提差率（%）",fontsize=9,fontweight="bold"); ax4.set_xticks(list(x)); ax4.set_xticklabels(dates,rotation=45,fontsize=7); sp(ax4); _vline(ax4,dates)
+    fig.suptitle("近14日大盘核心指标趋势",fontsize=11,fontweight="bold",y=1.01)
+    plt.tight_layout(rect=[0,0,1,.98]); return fig_img(fig,16,11)
+
+def chart_ret_weekly(weeks):
+    """近4周留存图，加目标线，列用 第1日/第2日/第6日"""
+    fig,ax=plt.subplots(figsize=(14,6),facecolor="white")
+    cols=[("第1日","次留","#1d4ed8"),("第2日","3留","#059669"),("第6日","7留","#7c3aed")]
+    x=np.arange(len(weeks)); w=.25
+    for i,(col,lbl,clr) in enumerate(cols):
+        vals=[wk.get(col,np.nan) for wk in weeks]
+        bars=ax.bar(x+i*w-w,vals,w,label=lbl,color=clr,alpha=.85)
+        for bar,v in zip(bars,vals):
+            if not (isinstance(v,float) and np.isnan(v)):
+                ax.text(bar.get_x()+bar.get_width()/2,bar.get_height()+.3,f"{v:.1f}%",ha="center",fontsize=6.5,color=clr)
+        tgt=RET_TARGETS.get(lbl)
+        if tgt: ax.axhline(tgt,color=clr,ls="--",lw=1.2,alpha=.55)
+    ax.set_xticks(x); ax.set_xticklabels([wk["week"] for wk in weeks],fontsize=8)
+    ax.set_title("首充用户充值留存率 近4周对比（含目标虚线）",fontsize=10,fontweight="bold")
+    ax.legend(fontsize=8,loc="upper left"); ax.axvline(x=2.5,color="#ef4444",ls="--",lw=1,alpha=.5)
+    ax.grid(axis="y",alpha=.3); ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+    plt.tight_layout(); return fig_img(fig,14,6)
+
+def chart_vip(tw_v,lw_v):
+    vips=sorted(set(tw_v.index)|set(lw_v.index)); labels=[f"V{int(v)}" for v in vips]
+    x=np.arange(len(vips)); w=.35
+    fig,(ax1,ax2,ax3)=plt.subplots(1,3,figsize=(16,5.5),facecolor="white")
+    tc=[tw_v.loc[v,"充值金额"]/10000 if v in tw_v.index else 0 for v in vips]
+    lc=[lw_v.loc[v,"充值金额"]/10000 if v in lw_v.index else 0 for v in vips]
+    ax1.bar(x-w/2,tc,w,label="本周",color="#1d4ed8",alpha=.85); ax1.bar(x+w/2,lc,w,label="上周",color="#93c5fd",alpha=.7)
+    ax1.set_title("各VIP充值金额（万USD）",fontsize=9,fontweight="bold"); ax1.set_xticks(x); ax1.set_xticklabels(labels,rotation=45,fontsize=7); ax1.legend(fontsize=7); ax1.grid(axis="y",alpha=.3); ax1.spines["top"].set_visible(False); ax1.spines["right"].set_visible(False)
+    tb=[tw_v.loc[v,"投注金额"]/10000 if v in tw_v.index else 0 for v in vips]
+    lb=[lw_v.loc[v,"投注金额"]/10000 if v in lw_v.index else 0 for v in vips]
+    ax2.bar(x-w/2,tb,w,label="本周",color="#059669",alpha=.85); ax2.bar(x+w/2,lb,w,label="上周",color="#6ee7b7",alpha=.7)
+    ax2.set_title("各VIP投注金额（万USD）",fontsize=9,fontweight="bold"); ax2.set_xticks(x); ax2.set_xticklabels(labels,rotation=45,fontsize=7); ax2.legend(fontsize=7); ax2.grid(axis="y",alpha=.3); ax2.spines["top"].set_visible(False); ax2.spines["right"].set_visible(False)
+    chg=[(tw_v.loc[v,"充值金额"]-lw_v.loc[v,"充值金额"])/lw_v.loc[v,"充值金额"]*100 if v in tw_v.index and v in lw_v.index and lw_v.loc[v,"充值金额"]>0 else 0 for v in vips]
+    ax3.bar(x,chg,color=["#059669" if c>=0 else "#dc2626" for c in chg],alpha=.85,width=.6); ax3.axhline(0,color="black",lw=.8)
+    ax3.set_title("各VIP充值金额环比（%）",fontsize=9,fontweight="bold"); ax3.set_xticks(x); ax3.set_xticklabels(labels,rotation=45,fontsize=7); ax3.grid(axis="y",alpha=.3); ax3.spines["top"].set_visible(False); ax3.spines["right"].set_visible(False)
+    plt.tight_layout(); return fig_img(fig,16,6)
+
+def chart_vip_retention(vr):
+    vips=[1,3,4,5,6,7,8,9,10,11,12]; labels=[f"V{v}" for v in vips]
+    fig,(ax1,ax2)=plt.subplots(1,2,figsize=(16,5.5),facecolor="white"); x=np.arange(len(labels)); w=.28
+    for ax,rt,t in [(ax1,"chg","充值→充值 留存率（%）"),(ax2,"act","充值→活跃 留存率（%）")]:
+        tw1=[vr[rt]["tw"]["1日"].get(v,0) for v in vips]; lw1=[vr[rt]["lw"]["1日"].get(v,0) for v in vips]; tw3=[vr[rt]["tw"]["3日"].get(v,0) for v in vips]
+        clr=("#1d4ed8","#93c5fd","#059669") if rt=="chg" else ("#7c3aed","#c4b5fd","#d97706")
+        ax.bar(x-w,tw1,w,label="次日(本周)",color=clr[0],alpha=.85); ax.bar(x,lw1,w,label="次日(上周)",color=clr[1],alpha=.7); ax.bar(x+w,tw3,w,label="3日(本周)",color=clr[2],alpha=.75)
+        ax.set_title(t,fontsize=10,fontweight="bold"); ax.set_xticks(x); ax.set_xticklabels(labels,fontsize=8); ax.legend(fontsize=7.5,loc="upper left"); ax.grid(axis="y",alpha=.25); ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False); ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v,_:f"{v:.0f}%"))
+    plt.suptitle("VIP各等级充值留存率",fontsize=11,fontweight="bold",y=1.02); plt.tight_layout(); return fig_img(fig,16,6)
+
+def chart_mfr_combo(mfr):
+    top10=mfr.head(10); names=top10["厂商显示名"].tolist() if "厂商显示名" in top10.columns else top10["show_name_厂商标签id"].tolist()
+    fig,(ax1,ax2)=plt.subplots(1,2,figsize=(16,6),facecolor="white")
+    sh=top10["占比"].tolist(); ls=top10["lw_占比"].fillna(0).tolist()
+    bars=ax1.bar(names,sh,color=["#059669" if c>=l else "#dc2626" for c,l in zip(sh,ls)],alpha=.85,width=.6)
+    ax1.plot(names,ls,"--o",color="#64748b",lw=1.5,ms=5,zorder=5)
+    for bar,s,ic in zip(bars,sh,top10["投注环比"].tolist()):
+        ax1.text(bar.get_x()+bar.get_width()/2,bar.get_height()+.2,f"{s:.1f}%",ha="center",fontsize=7)
+        ax1.text(bar.get_x()+bar.get_width()/2,bar.get_height()/2,f"{ic:+.0f}%",ha="center",fontsize=6.5,color="white",fontweight="bold")
+    ax1.set_title("Top10厂商 投注份额",fontsize=9,fontweight="bold"); ax1.set_xticklabels(names,rotation=30,ha="right",fontsize=7.5)
+    ax1.legend(handles=[mpatches.Patch(color="#059669",label="份额增长"),mpatches.Patch(color="#dc2626",label="份额下降"),plt.Line2D([0],[0],color="#64748b",ls="--",marker="o",ms=4,label="上周份额")],fontsize=7.5)
+    ax1.grid(axis="y",alpha=.3); ax1.spines["top"].set_visible(False); ax1.spines["right"].set_visible(False)
+    x=np.arange(len(names)); w=.35
+    ax2.bar(x-w/2,top10["盈亏率"].tolist(),w,label="本周",color=["#059669" if v>0 else "#dc2626" for v in top10["盈亏率"]],alpha=.85)
+    ax2.bar(x+w/2,top10["lw_盈亏率"].fillna(0).tolist(),w,label="上周",color="#93c5fd",alpha=.7)
+    ax2.axhline(0,color="black",lw=.8); ax2.set_title("Top10厂商 盈亏率对比（%）",fontsize=9,fontweight="bold"); ax2.set_xticks(x); ax2.set_xticklabels([n[:8] for n in names],rotation=30,ha="right",fontsize=7.5); ax2.legend(fontsize=7.5); ax2.grid(axis="y",alpha=.3); ax2.spines["top"].set_visible(False); ax2.spines["right"].set_visible(False); ax2.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v,_:f"{v:.1f}%"))
+    plt.tight_layout(); return fig_img(fig,16,6.5)
+
+def chart_top30(top30):
+    t15=top30.head(15); names=[r["游戏.名称"][:18] for _,r in t15.iterrows()]
+    bets=[r["投注金额"]/10000 for _,r in t15.iterrows()]; lw_b=[r["lw_投注"]/10000 if not pd.isna(r.get("lw_投注",np.nan)) else 0 for _,r in t15.iterrows()]
+    x=np.arange(len(names)); w=.35; fig,ax=plt.subplots(figsize=(14,7),facecolor="white")
+    ax.barh(x+w/2,bets,w,label="本周",color="#1d4ed8",alpha=.85); ax.barh(x-w/2,lw_b,w,label="上周",color="#93c5fd",alpha=.7)
+    for bar,v in zip(ax.patches[:len(names)],bets[::-1]): ax.text(bar.get_width()+.2,bar.get_y()+bar.get_height()/2,f"{v:.0f}万",va="center",fontsize=7)
+    ax.set_yticks(x); ax.set_yticklabels(names,fontsize=8); ax.set_title("Top15游戏 投注金额（万USD）",fontsize=9,fontweight="bold"); ax.legend(fontsize=8); ax.grid(axis="x",alpha=.3); ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+    plt.tight_layout(); return fig_img(fig,14,7)
+
+def chart_pref(pg,ma):
+    fig,(ax1,ax2)=plt.subplots(1,2,figsize=(16,6),facecolor="white")
+    names=ma.index[:8].tolist(); vals=ma.values[:8].tolist(); tot=sum(vals); pcts=[v/tot*100 for v in vals]; clrs=CHART_COLORS[:len(names)]
+    wedges,_,auts=ax1.pie(vals,labels=None,colors=clrs,autopct=lambda p:f"{p:.1f}%" if p>4 else "",startangle=90,pctdistance=.78,wedgeprops=dict(edgecolor="white",linewidth=1.5))
+    for at in auts: at.set_fontsize(8); at.set_color("white"); at.set_fontweight("bold")
+    ax1.legend(wedges,[f"{n[:12]}({p:.1f}%)" for n,p in zip(names,pcts)],loc="lower left",fontsize=7.5,bbox_to_anchor=(-.05,-.18)); ax1.set_title("Top500提款用户 厂商偏好",fontsize=9,fontweight="bold")
+    t12=pg.head(12); gn=[f"[{r['show_name_厂商标签id']}]\n{r['游戏名称']}"[:22] for _,r in t12.iterrows()]; gv=[r["本周投注"]/10000 for _,r in t12.iterrows()]; gc=["#dc2626" if r["盈亏率"]<0 else "#1d4ed8" for _,r in t12.iterrows()]
+    ax2.barh(range(len(gn))[::-1],gv,color=gc[::-1],alpha=.85); ax2.set_yticks(range(len(gn))); ax2.set_yticklabels(gn,fontsize=7.5); ax2.set_title("偏好游戏Top12（红=平台亏损）",fontsize=9,fontweight="bold"); ax2.xaxis.set_major_formatter(mticker.FuncFormatter(lambda v,_:f"{v:.0f}万")); ax2.grid(axis="x",alpha=.3); ax2.spines["top"].set_visible(False); ax2.spines["right"].set_visible(False)
+    plt.tight_layout(); return fig_img(fig,16,6)
+
+def chart_activities(act):
+    t10=act.head(10); names=[str(r["name_账变opt_id"])[:12] for _,r in t10.iterrows()]; vals=[r["赠送金额"]/10000 for _,r in t10.iterrows()]; lw=[r["lw_赠"]/10000 for _,r in t10.iterrows()]; envs=[r["环比"] for _,r in t10.iterrows()]
+    fig,(ax1,ax2)=plt.subplots(1,2,figsize=(16,6),facecolor="white"); x=np.arange(len(names)); w=.35
+    ax1.barh(x+w/2,vals[::-1],w,label="本周",color="#1d4ed8",alpha=.85); ax1.barh(x-w/2,lw[::-1],w,label="上周",color="#93c5fd",alpha=.7); ax1.set_yticks(x); ax1.set_yticklabels(names[::-1],fontsize=8); ax1.set_title("Top10活动 赠送金额（万USD）",fontsize=9,fontweight="bold"); ax1.legend(fontsize=8); ax1.grid(axis="x",alpha=.3); ax1.spines["top"].set_visible(False); ax1.spines["right"].set_visible(False)
+    es=[v if not pd.isna(v) else 0 for v in envs]
+    ax2.barh(range(len(names)),es[::-1],color=["#059669" if v>0 else "#dc2626" for v in es[::-1]],alpha=.85); ax2.axvline(0,color="black",lw=.8); ax2.set_yticks(range(len(names))); ax2.set_yticklabels(names[::-1],fontsize=8); ax2.set_title("Top10活动 环比变化（%）",fontsize=9,fontweight="bold"); ax2.xaxis.set_major_formatter(mticker.FuncFormatter(lambda v,_:f"{v:+.0f}%")); ax2.grid(axis="x",alpha=.3); ax2.spines["top"].set_visible(False); ax2.spines["right"].set_visible(False)
+    plt.tight_layout(); return fig_img(fig,16,6)
+
+def chart_tool_usage(tool):
+    big=tool[tool["本周发放"]>=100].head(12); t12=big if len(big)>0 else tool.head(12)
+    def _l(r):
+        a=str(r.get("活动","")); n=str(r.get("备注",""))
+        return f"{str(r['道具ID'])[:6]}\n{n[:8]}" if a=="其他" else f"[{a[:4]}]\n{n[:8]}"
+    names=[_l(r) for _,r in t12.iterrows()]
+    ti=[r["本周发放"] for _,r in t12.iterrows()]; li=[r["上周发放"] for _,r in t12.iterrows()]
+    tr=[r["本周使用率"] if not pd.isna(r["本周使用率"]) else 0 for _,r in t12.iterrows()]; lr=[r["上周使用率"] if not pd.isna(r["上周使用率"]) else 0 for _,r in t12.iterrows()]
+    fig=plt.figure(figsize=(16,9),facecolor="white"); gs=gridspec.GridSpec(2,2,figure=fig,hspace=.5,wspace=.35)
+    x=np.arange(len(names)); w=.35
+    ax1=fig.add_subplot(gs[0,0]); ax1.bar(x-w/2,ti,w,label="本周发放",color="#1d4ed8",alpha=.85); ax1.bar(x+w/2,li,w,label="上周发放",color="#93c5fd",alpha=.7)
+    ax1.set_title("Top12道具 发放量",fontsize=9,fontweight="bold"); ax1.set_xticks(x); ax1.set_xticklabels(names,fontsize=6.5); ax1.legend(fontsize=7); ax1.grid(axis="y",alpha=.3); ax1.spines["top"].set_visible(False); ax1.spines["right"].set_visible(False)
+    ax1.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v,_:f"{v/10000:.0f}万" if v>=10000 else f"{v:.0f}"))
+    ax2=fig.add_subplot(gs[0,1]); ax2.bar(x-w/2,tr,w,label="本周使用率",color="#059669",alpha=.85); ax2.bar(x+w/2,lr,w,label="上周使用率",color="#6ee7b7",alpha=.7)
+    ax2.set_title("Top12道具 使用率",fontsize=9,fontweight="bold"); ax2.set_xticks(x); ax2.set_xticklabels(names,fontsize=6.5); ax2.legend(fontsize=7); ax2.grid(axis="y",alpha=.3); ax2.spines["top"].set_visible(False); ax2.spines["right"].set_visible(False); ax2.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v,_:f"{v:.0f}%"))
+    ax3=fig.add_subplot(gs[1,:])
+    di=[r.get("发放环比",0) if not pd.isna(r.get("发放环比",np.nan)) else 0 for _,r in t12.iterrows()]
+    du=[r.get("使用环比",0) if not pd.isna(r.get("使用环比",np.nan)) else 0 for _,r in t12.iterrows()]
+    ax3.bar(x-w/2,di,w,label="发放量环比",color=["#059669" if v>=0 else "#dc2626" for v in di],alpha=.85)
+    ax3.bar(x+w/2,du,w,label="使用量环比",color=["#7c3aed" if v>=0 else "#f97316" for v in du],alpha=.7)
+    ax3.axhline(0,color="black",lw=.8); ax3.set_title("Top12道具 发放/使用量 环比变化（%）",fontsize=9,fontweight="bold")
+    ax3.set_xticks(x); ax3.set_xticklabels(names,fontsize=6.5); ax3.legend(fontsize=7.5); ax3.grid(axis="y",alpha=.3); ax3.spines["top"].set_visible(False); ax3.spines["right"].set_visible(False)
+    ax3.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v,_:f"{v:+.0f}%"))
+    plt.suptitle("道具发放与使用分析",fontsize=11,fontweight="bold",y=1.01); plt.tight_layout(rect=[0,0,1,.98]); return fig_img(fig,16,10)
+
+def chart_first_dep_ret(R):
+    lv=[R.get(f"lw_{d}日",np.nan) for d in ["1","2","3","4","5","6","7"]]
+    tv=[R.get(f"tw_{d}日",np.nan) for d in ["1","2","3","4","5","6","7"]]
+    fig,ax=plt.subplots(figsize=(12,5),facecolor="white"); x=np.arange(7)
+    ax.plot(x,lv,"-o",color="#93c5fd",lw=2,ms=6,label=f"上周（{LAST_WEEK[0][4:6]}/{LAST_WEEK[0][6:]}-{LAST_WEEK[1][4:6]}/{LAST_WEEK[1][6:]}）")
+    ax.plot(x,tv,"-o",color="#1d4ed8",lw=2,ms=6,label=f"本周（{THIS_WEEK[0][4:6]}/{THIS_WEEK[0][6:]}-{THIS_WEEK[1][4:6]}/{THIS_WEEK[1][6:]}）")
+    days=["D1","D2","D3","D4","D5","D6","D7"]
+    for i,(lval,tval) in enumerate(zip(lv,tv)):
+        if lval is not None and not (isinstance(lval,float) and np.isnan(lval)): ax.text(i,lval+.4,f"{lval:.1f}%",ha="center",fontsize=7.5,color="#64748b")
+        if tval is not None and not (isinstance(tval,float) and np.isnan(tval)): ax.text(i,tval-1.2,f"{tval:.1f}%",ha="center",fontsize=7.5,color="#1d4ed8",fontweight="bold")
+    ax.set_xticks(x); ax.set_xticklabels(days,fontsize=9); ax.set_title("首次充值活动用户 充值留存趋势",fontsize=10,fontweight="bold")
+    ax.legend(fontsize=8.5,loc="upper right"); ax.grid(axis="y",alpha=.3); ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v,_:f"{v:.0f}%"))
+    plt.tight_layout(); return fig_img(fig,13,5.5)
+
+def chart_risk_scatter(top500):
+    v=top500[top500["投充比"].notna()&top500["游戏_投注金额"].notna()].copy(); v=v[v["投充比"]<200]
+    fig,ax=plt.subplots(figsize=(14,5.5),facecolor="white")
+    ax.scatter(v["投充比"],v["公司输赢"]/10000,c=["#dc2626" if x<0 else "#059669" for x in v["公司输赢"]],s=[min(abs(x)/500+20,200) for x in v["公司输赢"]],alpha=.55,edgecolors="none")
+    ax.axhline(0,color="black",lw=.8,ls="--"); ax.axvline(20,color="#d97706",lw=1,ls=":",alpha=.7); ax.text(21,ax.get_ylim()[0]*.9,"投充比=20x",fontsize=7.5,color="#d97706")
+    for _,r in top500[(top500["公司输赢"]<-10000)&(top500["投充比"]<200)&top500["投充比"].notna()].iterrows():
+        ax.annotate(str(r["账户ID"])[-5:],xy=(r["投充比"],r["公司输赢"]/10000),xytext=(r["投充比"]+5,r["公司输赢"]/10000-.2),fontsize=6.5,color="#991b1b",arrowprops=dict(arrowstyle="->",color="#991b1b",lw=.7))
+    ax.set_xlabel("投充比（倍）",fontsize=8); ax.set_ylabel("公司输赢（万USD）",fontsize=8); ax.set_title("Top500提款用户：投充比 vs 公司输赢",fontsize=9,fontweight="bold")
+    ax.legend(handles=[mpatches.Patch(color="#dc2626",alpha=.6,label="平台输钱"),mpatches.Patch(color="#059669",alpha=.6,label="平台赢钱")],fontsize=8,loc="upper right"); ax.grid(alpha=.25); ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+    plt.tight_layout(); return fig_img(fig,15,6)
+
+def chart_risk_games(rg):
+    t12=rg.head(12); names=[r["游戏名称"][:16] for _,r in t12.iterrows()]; losses=[abs(r["公司输赢"]) for _,r in t12.iterrows()]; rates=[r["盈亏率"] for _,r in t12.iterrows()]
+    fig,(ax1,ax2)=plt.subplots(1,2,figsize=(16,6),facecolor="white")
+    ax1.barh(names[::-1],losses[::-1],color="#dc2626",alpha=.85)
+    for bar,v in zip(ax1.patches,losses[::-1]): ax1.text(bar.get_width()+500,bar.get_y()+bar.get_height()/2,f"${v:,.0f}",va="center",fontsize=7)
+    ax1.set_title("公司净亏损额（USD）",fontsize=9,fontweight="bold"); ax1.grid(axis="x",alpha=.3); ax1.spines["top"].set_visible(False); ax1.spines["right"].set_visible(False); ax1.xaxis.set_major_formatter(mticker.FuncFormatter(lambda v,_:f"${v/1000:.0f}k")); ax1.tick_params(axis="y",labelsize=7.5)
+    ax2.barh(names[::-1],rates[::-1],color=["#7c3aed" if r>-10 else "#dc2626" for r in rates[::-1]],alpha=.85); ax2.axvline(0,color="black",lw=.8); ax2.set_title("盈亏率（%）",fontsize=9,fontweight="bold"); ax2.grid(axis="x",alpha=.3); ax2.spines["top"].set_visible(False); ax2.spines["right"].set_visible(False); ax2.xaxis.set_major_formatter(mticker.FuncFormatter(lambda v,_:f"{v:.0f}%")); ax2.tick_params(axis="y",labelsize=7.5)
+    plt.tight_layout(); return fig_img(fig,16,6.5)
+# ════════════════════════════════════════════════════════════════
+# 章节构建
+# ════════════════════════════════════════════════════════════════
+
+def _render(t, **kw):
+    try: return t.format(**kw)
+    except: return t
+
+def build_overview(K, trend, weekly_ret, dash_ret):
+    full = PW - 2*MARGIN
+    S = [sec_title("一、大盘核心数据")]
+    kpis = [
+        ("充值金额",   f"{K['tw_充值金额']/10000:.1f}万",   f"{K['lw_充值金额']/10000:.1f}万",   K["pct_充值金额"],   True),
+        ("提现金额",   f"{K['tw_提现金额']/10000:.1f}万",   f"{K['lw_提现金额']/10000:.1f}万",   K["pct_提现金额"],   False),
+        ("充提差",     f"{K['tw_充提差']/10000:.1f}万",     f"{K['lw_充提差']/10000:.1f}万",     K["pct_充提差"],     True),
+        ("充提差率",   f"{K['tw_充提差比']:.2f}%",          f"{K['lw_充提差比']:.2f}%",          K["pct_充提差比"],   True),
+        ("公司输赢",   f"{K['tw_公司输赢']/10000:.1f}万",   f"{K['lw_公司输赢']/10000:.1f}万",   K["pct_公司输赢"],   True),
+        ("盈亏率",     f"{K['tw_盈亏率']:.3f}%",            f"{K['lw_盈亏率']:.3f}%",            K["pct_盈亏率"],     True),
+        ("注册人数",   f"{int(K['tw_注册人数']):,}",        f"{int(K['lw_注册人数']):,}",        K["pct_注册人数"],   True),
+        ("首充人数",   f"{int(K['tw_首充人数']):,}",        f"{int(K['lw_首充人数']):,}",        K["pct_首充人数"],   True),
+        ("日均活跃",   f"{K['tw_活跃人数']/7/10000:.1f}万", f"{K['lw_活跃人数']/7/10000:.1f}万", K["pct_活跃人数"],   True),
+        ("投注金额",   f"{K['tw_投注金额']/10000:.0f}万",   f"{K['lw_投注金额']/10000:.0f}万",   K["pct_投注金额"],   True),
+        ("全量ARPPU",  f"${K['tw_全量Arppu']:.2f}",         f"${K['lw_全量Arppu']:.2f}",         K["pct_全量Arppu"],  True),
+        ("老用户ARPPU",f"${K['tw_老用户ARPPU']:.2f}",       f"${K['lw_老用户ARPPU']:.2f}",       K["pct_老用户ARPPU"],True),
+        ("首充ARPPU",  f"${K['tw_首充Arppu']:.2f}",         f"${K['lw_首充Arppu']:.2f}",         K["pct_首充Arppu"],  True),
+        ("总赠送金额", f"{K['tw_总赠送金额']/10000:.1f}万", f"{K['lw_总赠送金额']/10000:.1f}万", K["pct_总赠送金额"], False),
+        ("赠送/充值比",f"{K['tw_赠送充值比']:.2f}%",        f"{K['lw_赠送充值比']:.2f}%",        K["pct_赠送充值比"], False),
+        ("首充转化率", f"{K['tw_首充转化率']:.1f}%",        f"{K['lw_首充转化率']:.1f}%",        K["pct_首充转化率"], True),
+        ("首充次日留存",f"{K['tw_首充次日复充率']:.1f}%",   f"{K['lw_首充次日复充率']:.1f}%",   K["pct_首充次日复充率"],True),
+        ("推广消耗",   f"{K['tw_真实消耗']/10000:.1f}万",   f"{K['lw_真实消耗']/10000:.1f}万",   K["pct_真实消耗"],   False),
+    ]
+    S.append(kpi_card4(kpis, cols=4)); S.append(Spacer(1,8))
+    cr_d = K["tw_充提差比"]-K["lw_充提差比"]; rd = K["tw_首充次日复充率"]-K["lw_首充次日复充率"]
+    ov = dict(tw_充值金额=K["tw_充值金额"]/10000, pct_充值金额=K["pct_充值金额"],
+              tw_公司输赢=K["tw_公司输赢"]/10000, pct_公司输赢=K["pct_公司输赢"],
+              pct_真实消耗=K["pct_真实消耗"], tw_充提差比=K["tw_充提差比"], lw_充提差比=K["lw_充提差比"],
+              delta_充提差比=cr_d, tw_盈亏率=K["tw_盈亏率"], lw_盈亏率=K["lw_盈亏率"],
+              tw_首充人数=int(K["tw_首充人数"]), pct_首充人数=K["pct_首充人数"],
+              tw_首充转化率=K["tw_首充转化率"], tw_首充Arppu=K["tw_首充Arppu"],
+              pct_首充Arppu=K["pct_首充Arppu"], tw_首充次日复充率=K["tw_首充次日复充率"],
+              lw_首充次日复充率=K["lw_首充次日复充率"], delta_首充次日复充率=rd)
+    S.append(insight_box([
+        _render("充值{tw_充值金额:.1f}万（{pct_充值金额:+.1f}%），公司输赢{tw_公司输赢:.1f}万（{pct_公司输赢:+.1f}%）；推广消耗{pct_真实消耗:+.1f}%。",**ov),
+        _render("充提差率{tw_充提差比:.2f}%（上周{lw_充提差比:.2f}%，{delta_充提差比:+.2f}pp）；盈亏率{tw_盈亏率:.3f}%（上周{lw_盈亏率:.3f}%）。",**ov),
+        _render("首充人数{tw_首充人数:,}（{pct_首充人数:+.1f}%），转化率{tw_首充转化率:.1f}%，首充ARPPU${tw_首充Arppu:.2f}（{pct_首充Arppu:+.1f}%）。",**ov),
+        _render("首充次日充值留存{tw_首充次日复充率:.1f}%（上周{lw_首充次日复充率:.1f}%，{delta_首充次日复充率:+.1f}pp）。",**ov),
+    ]))
+    S.append(sub_title("近14日核心指标趋势")); S.append(chart_trend(trend)); S.append(Spacer(1,8))
+
+    # ── 大盘留存汇总表（含目标对比）──────────────────────────────
+    S.append(sub_title("大盘首充留存 vs 目标对比（来源：日报 首充2/3/7日复充率）"))
+    specs = [
+        ("次留", "tw_nd", "lw_nd", "tw_nd_end"),
+        ("3留",  "tw_td", "lw_td", "tw_td_end"),
+        ("7留",  "tw_sd", "lw_sd", "tw_sd_end"),
+    ]
+    ret_headers = ["留存类型","数据截止","本周实际","上周实际","周环比(pp)","目标","vs目标(pp)"]
+    ret_rows = []
+    for rtype, tw_k, lw_k, end_k in specs:
+        tw_v = dash_ret.get(tw_k, np.nan); lw_v = dash_ret.get(lw_k, np.nan)
+        end_lbl = fmt_lbl(dash_ret.get(end_k))
+        tgt = RET_TARGETS.get(rtype, np.nan)
+        wpp = (tw_v-lw_v) if not (np.isnan(tw_v) or np.isnan(lw_v)) else np.nan
+        dpp = (tw_v-tgt) if not (np.isnan(tw_v) or np.isnan(tgt)) else np.nan
+        tw_clr = C_GREEN if (not np.isnan(tw_v) and not np.isnan(tgt) and tw_v>=tgt) else C_RED
+        wpp_clr = C_GREEN if (not np.isnan(wpp) and wpp>=0) else C_RED
+        dpp_clr = C_GREEN if (not np.isnan(dpp) and dpp>=0) else C_RED
+        ret_rows.append([
+            cell(rtype, True, C_DARK),
+            cell(end_lbl, False, C_GRAY, TA_CENTER),
+            cell(fret(tw_v), False, tw_clr, TA_RIGHT),
+            cell(fret(lw_v), False, C_GRAY, TA_RIGHT),
+            cell(f"{wpp:+.1f}pp" if not np.isnan(wpp) else "-", False, wpp_clr, TA_RIGHT),
+            cell(f"{tgt:.0f}%" if not np.isnan(tgt) else "-", True, C_TARGET, TA_CENTER),
+            cell(f"{dpp:+.1f}pp" if not np.isnan(dpp) else "-", True, dpp_clr, TA_RIGHT),
+        ])
+    extra = [("BACKGROUND",(5,1),(5,-1), colors.HexColor("#eff6ff"))]
+    S.append(dtable(ret_headers, ret_rows,
+                    [full*x for x in [0.16,0.12,0.14,0.14,0.14,0.12,0.14]],
+                    fsize=8, extra_style=extra))
+    S.append(Spacer(1,4))
+    nd_end=fmt_lbl(dash_ret.get("tw_nd_end")); td_end=fmt_lbl(dash_ret.get("tw_td_end")); sd_end=fmt_lbl(dash_ret.get("tw_sd_end"))
+    S.append(P(f"本周截止：次留~{nd_end}，3留~{td_end}，7留~{sd_end}（剔除数据未满足lag天数的不完整日期）",7,False,C_GRAY))
+    S.append(Spacer(1,8))
+
+    # ── 近4周留存图 ──────────────────────────────────────────────
+    S.append(sub_title("首充用户充值留存 — 近4周对比（含目标线）"))
+    S.append(chart_ret_weekly(weekly_ret)); S.append(Spacer(1,4))
+    this_w=weekly_ret[-1]; last_w=weekly_ret[-2]
+    d1=this_w.get("第1日",0) or 0; d2=this_w.get("第2日",0) or 0; d6=this_w.get("第6日",0) or 0
+    ld1=last_w.get("第1日",0) or 0; ld6=last_w.get("第6日",0) or 0
+    S.append(insight_box([
+        f"本周首充次日留存{d1:.1f}%，较上周{d1-ld1:+.1f}pp；3留{d2:.1f}%，7留{d6:.1f}%。",
+        f"注：本周7日留存因截止日期不完整，以上周7留{ld6:.1f}%作为参考基准。",
+    ], clr=C_AMBER))
+    return S
+
+
+def build_agents(agents, agent_ret, ends):
+    """
+    v7.3 总代表：
+    ① 3留(本/上) 合并一列，格式 X.X%/Y.Y%，同次日留存
+    ② 数据源：首充充值留存_** 2日=次留 3日=3留 6日=7留
+    ③ 列宽/字号优化确保单行
+    """
+    full = PW - 2*MARGIN
+    S = [sec_title("二、总代分析")]
+
+    tw_nd_lbl = fmt_lbl(ends.get("tw_nd_end")); lw_nd_lbl = fmt_lbl(ends.get("lw_nd_end"))
+    tw_3d_lbl = fmt_lbl(ends.get("tw_3d_end")); lw_3d_lbl = fmt_lbl(ends.get("lw_3d_end"))
+    lw_7d_lbl = fmt_lbl(ends.get("lw_7d_end"))
+
+    S.append(sub_title("全量总代表现（本周 vs 上周，按充值金额排序，含官方总代0）"))
+    S.append(P(
+        f"数据源：首充充值留存_**（当日=第0日，2日列=次留，3日列=3留，6日列=7留）  "
+        f"截止：次留本{tw_nd_lbl}/上{lw_nd_lbl}，3留本{tw_3d_lbl}/上{lw_3d_lbl}，7留上{lw_7d_lbl}",
+        6.5, False, C_GRAY)); S.append(Spacer(1,3))
+
+    # v7.3：11列，去掉独立3留上周，合并为3留(本/上)
+    headers = [
+        "ID", "总代名称", "注册(环比)", "首充\n人数", "充值\n(万)",
+        "充提差率\n(差值pp)", "消耗\n(万)", "1级首充\n成本(本/上)",
+        f"次留(本/上)\n~{tw_nd_lbl}/{lw_nd_lbl}",
+        f"3留(本/上)\n~{tw_3d_lbl}/{lw_3d_lbl}",
+        f"7留上周\n~{lw_7d_lbl}",
+    ]
+
+    rows = []
+    for _, r in agents.iterrows():
+        aid = int(r["总代.ID"]) if "总代.ID" in r and not pd.isna(r.get("总代.ID")) else "-"
+        rname = str(r["总代.名称"])
+        cr = r["充提差率"]; lw_cr = r.get("lw_充提差率", 0) or 0; cr_d = cr - lw_cr
+        cost = (r.get("总消耗", 0) or 0) / 10000
+        fcc = r.get("一级首充成本", 0) or 0; lfc = r.get("lw_fc_cost", 0) or 0
+        reg = int(r["注册人数"]); reg_c = r.get("注册环比", 0) or 0
+        reg_s = f"{reg:,}/{'+' if reg_c>=0 else ''}{reg_c:.0f}%"
+        cr_s = f"{cr:.1f}%/{'+' if cr_d>=0 else ''}{cr_d:.1f}pp"
+        cr_clr = C_GREEN if cr >= CR_HIGH else (C_RED if cr < CR_LOW else C_DARK)
+
+        d = agent_ret.get(rname, {})
+        tw_nd = d.get("tw_nd", np.nan); lw_nd = d.get("lw_nd", np.nan)
+        tw_3d = d.get("tw_3d", np.nan); lw_3d = d.get("lw_3d", np.nan)
+        lw_7d = d.get("lw_7d", np.nan)
+
+        def _fmt_pair(tw_v, lw_v):
+            if not np.isnan(tw_v) and not np.isnan(lw_v):
+                return f"{tw_v:.1f}%/{lw_v:.1f}%", C_GREEN if tw_v >= lw_v else C_RED
+            if not np.isnan(tw_v): return f"{tw_v:.1f}%/-", C_DARK
+            return "-", C_GRAY
+
+        nd_s, nd_clr = _fmt_pair(tw_nd, lw_nd)
+        td_s, td_clr = _fmt_pair(tw_3d, lw_3d)
+
+        rows.append([
+            cell(str(aid), False, C_GRAY, TA_CENTER),
+            cell(rname[:14], True, C_DARK, TA_LEFT),
+            cell(reg_s, False, C_GREEN if reg_c >= 0 else C_RED, TA_RIGHT),
+            cell(f"{int(r['首充人数']):,}", False, C_DARK, TA_RIGHT),
+            cell(f"{r['充值金额']/10000:.0f}", False, C_DARK, TA_RIGHT),
+            cell(cr_s, False, cr_clr, TA_RIGHT),
+            cell(f"{cost:.1f}" if cost > 0 else "-", False, C_DARK, TA_RIGHT),
+            cell(f"${fcc:.0f}/${lfc:.0f}" if fcc > 0 else "-", False, C_DARK, TA_RIGHT),
+            cell(nd_s, False, nd_clr, TA_RIGHT),
+            cell(td_s, False, td_clr, TA_RIGHT),   # ← 3留(本/上) 合并列
+            cell(fret(lw_7d), False, C_DARK, TA_RIGHT),
+        ])
+
+    # 11列宽，合计 = 1.0 × full
+    # ID  名称   注册     首充   充值   充提差率  消耗   首充成本  次留   3留    7留
+    cw = [full*x for x in [0.04, 0.14, 0.10, 0.06, 0.05, 0.11, 0.05, 0.10, 0.11, 0.11, 0.08]]
+    S.append(dtable(headers, rows, cw, fsize=6.2))
+    S.append(Spacer(1,4))
+    S.append(P(
+        f"★ 充提差率≥{CR_HIGH}%绿，<{CR_LOW}%红。"
+        f"次留截止本~{tw_nd_lbl}/上~{lw_nd_lbl}；"
+        f"3留截止本~{tw_3d_lbl}/上~{lw_3d_lbl}；"
+        f"7留上周全量截止~{lw_7d_lbl}。",
+        6.5, False, C_GRAY)); S.append(Spacer(1,6))
+    dsp = agents[agents["总代.名称"].str.contains("DSP", na=False)]
+    S.append(insight_box([
+        _render("A8_DSP_谷歌原生包充提差率{dsp_cr:.1f}%，注册{dsp_reg:+.1f}%，体量靠前且指标双优。",
+                dsp_cr=dsp["充提差率"].values[0] if len(dsp)>0 else 0,
+                dsp_reg=dsp["注册环比"].values[0] if len(dsp)>0 else 0),
+        "苹果包总代注册+27.1%，充值体量第二，为本周注册增量最大渠道之一。",
+        "YB_FB_PWA_0注册暴跌-79%至1,315人，需持续监控是否恢复。",
+    ]))
+    return S
+
+
+def build_users(tw_v, lw_v, dep_t, wdr_t, dc_tw, dt_tw):
+    full = PW - 2*MARGIN; S = [sec_title("三、用户分析")]
+    S.append(sub_title("VIP等级分层分析")); S.append(chart_vip(tw_v, lw_v)); S.append(Spacer(1,4))
+    tot = tw_v["充值金额"].sum(); hvs = sum(tw_v.loc[v,"充值金额"] for v in [9,10,11] if v in tw_v.index)
+    S.append(insight_box([
+        f"VIP9-11高价值层合计贡献充值{hvs/tot*100:.1f}%，高端用户付费意愿持续强劲。",
+        f"VIP1基础层活跃{int(tw_v.loc[1,'活跃人数']):,}人（上周{int(lw_v.loc[1,'活跃人数']):,}），是拉新政策直接反映。" if 1 in tw_v.index else "VIP1基础层数据不可用。"
+    ]))
+    vr = load_vip_retention()
+    S.append(sub_title("VIP各等级充值留存率")); S.append(chart_vip_retention(vr)); S.append(Spacer(1,4))
+    S.append(insight_box([
+        f"充值→活跃次日留存：VIP9达{vr['act']['tw']['1日'].get(9,0):.1f}%，VIP10达{vr['act']['tw']['1日'].get(10,0):.1f}%。",
+        f"充值→充值次日留存：VIP10达{vr['chg']['tw']['1日'].get(10,0):.1f}%（上周{vr['chg']['lw']['1日'].get(10,0):.1f}%）。",
+    ])); S.append(Spacer(1,8))
+
+    S.append(sub_title("头部充值用户分层分析"))
+    S.append(P("注：两组为各自周次独立排名，并非同一批人的跨周对比。",7.5,False,C_GRAY)); S.append(Spacer(1,3))
+    h=["分层","本周充值","本周人均","上周人均","人均环比","充提差率(本)","充提差率(上)","占全量%","公司输赢"]
+    rows=[]
+    for d in dep_t:
+        rows.append([cell(d["tier"],True),cell(f"${d['tw_chg']/10000:.2f}万",False,C_DARK,TA_RIGHT),
+                     cell(f"${d['tw_avg']:,.0f}",False,C_DARK,TA_RIGHT),cell(f"${d['lw_avg']:,.0f}",False,C_GRAY,TA_RIGHT),
+                     rc(pct(d["tw_avg"],d["lw_avg"])),cell(f"{d['tw_cr']:.1f}%",False,gclr(d["tw_cr"],0),TA_RIGHT),
+                     cell(f"{d['lw_cr']:.1f}%",False,C_GRAY,TA_RIGHT),cell(f"{d['占全量']:.1f}%",False,C_DARK,TA_RIGHT),
+                     cell(f"${d['tw_win']/10000:.1f}万",False,gclr(d["tw_win"]),TA_RIGHT)])
+    S.append(dtable(h,rows,[full*x for x in [0.08,0.12,0.11,0.11,0.09,0.1,0.1,0.09,0.1]])); S.append(Spacer(1,6))
+    S.append(insight_box([
+        _render("Top10充值用户人均${top10_avg:,.0f}（{top10_avg_chg:+.1f}%），充提差率{top10_cr:.1f}%。",
+                top10_avg=dep_t[1]["tw_avg"],top10_avg_chg=pct(dep_t[1]["tw_avg"],dep_t[1]["lw_avg"]),top10_cr=dep_t[1]["tw_cr"]),
+        "Top50以下充提差率均已转正，中腰部用户资金沉淀健康，是大盘充提差率的主要贡献层。"
+    ]))
+
+    S.append(sub_title("头部提款用户分层分析"))
+    S.append(P("注：两组为各自周次独立排名，并非同一批人的跨周对比。",7.5,False,C_GRAY)); S.append(Spacer(1,3))
+    h3=["分层","本周提款","本周人均","上周人均","人均环比","充提差率(本)","充提差率(上)","赢家比例","活动占比","占全量%","剔除后大盘\n充提差影响"]
+    rows3=[]
+    for d in wdr_t:
+        rows3.append([cell(d["tier"],True),cell(f"${d['tw_tx']/10000:.2f}万",False,C_DARK,TA_RIGHT),
+                      cell(f"${d['tw_avg']:,.0f}",False,C_DARK,TA_RIGHT),cell(f"${d['lw_avg']:,.0f}",False,C_GRAY,TA_RIGHT),
+                      rc(pct(d["tw_avg"],d["lw_avg"]),good_up=False),
+                      cell(f"{d['tw_cr']:.1f}%",False,C_RED if d["tw_cr"]<-10 else C_AMBER,TA_RIGHT),
+                      cell(f"{d['lw_cr']:.1f}%",False,C_GRAY,TA_RIGHT),
+                      cell(f"{d['赢家']}/{d['赢家率']:.0f}%",False,C_RED if d["赢家率"]>65 else C_AMBER,TA_RIGHT),
+                      cell(f"{d['活动占比']:.1f}%",False,C_DARK,TA_RIGHT),
+                      cell(f"{d['占全量']:.1f}%",False,C_DARK,TA_RIGHT),
+                      cell(f"{d['大盘影响']:+.2f}pp",False,C_GREEN if d["大盘影响"]>0 else C_DARK,TA_RIGHT)])
+    S.append(dtable(h3,rows3,[full*x for x in [0.07,0.1,0.09,0.09,0.07,0.08,0.08,0.09,0.07,0.07,0.13]],fsize=6.5)); S.append(Spacer(1,6))
+    S.append(insight_box([
+        f"剔除Top100提款用户后，大盘充提差率影响+{wdr_t[3]['大盘影响']:.2f}pp，头部提款用户对充提差率有明显拖累。",
+        f"Top500提款用户活动奖励占资金来源仅{wdr_t[5]['活动占比']:.1f}%，主要靠真实赢钱后提款，非活动套利。",
+    ], clr=C_AMBER))
+    return S
+
+
+def build_games(mfr, top30, delta):
+    full = PW - 2*MARGIN; S = [sec_title("四、游戏分析")]
+    S.append(sub_title("Top10厂商 份额对比 & 盈亏率周对比")); S.append(chart_mfr_combo(mfr)); S.append(Spacer(1,4))
+    h=["排名","厂商","日均投注人数(本/上)","人均局数","人均金额","投注额(万)","投注额环比","占比","盈亏率(本)","盈亏率(上)"]
+    rows=[]
+    for i,(_,r) in enumerate(mfr.head(10).iterrows()):
+        pl=r["盈亏率"]; pc=C_RED if pl<0 else (C_GREEN if pl>4 else C_DARK)
+        rows.append([cell(str(i+1),False,C_GRAY,TA_CENTER),cell(str(r.get("厂商显示名",r["show_name_厂商标签id"])),True),
+                     cell(f"{r['日均投注人数']:,}/{r.get('lw_日均人数',0):.0f}",False,C_DARK,TA_RIGHT),
+                     cell(f"{r['人均局数']:.0f}",False,C_DARK,TA_RIGHT),cell(f"${r['人均金额']:.1f}",False,C_DARK,TA_RIGHT),
+                     cell(f"{r['投注金额']/10000:.1f}",False,C_DARK,TA_RIGHT),rc(r.get("投注环比",0)),
+                     cell(f"{r['占比']:.2f}%",False,C_PURPLE if r["占比"]>10 else C_DARK,TA_RIGHT),
+                     cell(f"{pl:.2f}%",False,pc,TA_RIGHT),cell(f"{r.get('lw_盈亏率',0):.2f}%",False,C_GRAY,TA_RIGHT)])
+    S.append(dtable(h,rows,[full*x for x in [0.05,0.10,0.15,0.07,0.08,0.08,0.08,0.08,0.09,0.09]],fsize=6.5)); S.append(Spacer(1,4))
+    def _mv(nm,col):
+        sub=mfr[mfr["show_name_厂商标签id"]==nm]; return sub[col].values[0] if len(sub)>0 else 0
+    S.append(insight_box([
+        _render("Tada投注份额{ts:.1f}%（上周{tsl:.1f}%），Fortune系稳固主导；环比{tc:+.1f}%。",
+                ts=mfr.iloc[0]["占比"],tsl=mfr.iloc[0].get("lw_占比",0),tc=mfr.iloc[0].get("投注环比",0)),
+        _render("Evolution盈亏率{ep:.2f}%（上周{epl:.2f}%），已转正，较上周大幅改善。",
+                ep=_mv("Evolution","盈亏率"),epl=_mv("Evolution","lw_盈亏率")),
+        _render("3Oaks盈亏率{op:.2f}%，PlayTech{pp:.2f}%，均高于平台均值，可适当扩大曝光权重。",
+                op=_mv("3Oaks","盈亏率"),pp=_mv("PlayTech","盈亏率")),
+    ]))
+    if delta:
+        S.append(sub_title("▶ 厂商投注额环比主要驱动游戏"))
+        dh=["厂商","投注额环比","增量最大游戏(+贡献)","降量最大游戏(-拖累)"]; dr=[]
+        for mn,gd in delta.items():
+            mrow=mfr[mfr["show_name_厂商标签id"]==mn]; mc=mrow["投注环比"].values[0] if len(mrow)>0 else 0
+            up=gd["up"]; dn=gd["dn"]
+            us=f'{up.iloc[0]["游戏.名称"][:16]}（+${up.iloc[0]["delta"]/10000:.1f}万）' if len(up)>0 and up.iloc[0]["delta"]>0 else "-"
+            ds=f'{dn.iloc[0]["游戏.名称"][:16]}（${dn.iloc[0]["delta"]/10000:.1f}万）' if len(dn)>0 and dn.iloc[0]["delta"]<0 else "-"
+            dr.append([cell(shorten_mfr(mn),True,C_DARK),rc(mc),cell(us,False,C_GREEN if us!="-" else C_GRAY),cell(ds,False,C_RED if ds!="-" else C_GRAY)])
+        S.append(dtable(dh,dr,[full*x for x in [0.15,0.10,0.37,0.38]],fsize=6.8)); S.append(Spacer(1,6))
+    S.append(sub_title("Top30游戏详细数据")); S.append(chart_top30(top30)); S.append(Spacer(1,4))
+    h2=["#","游戏名称","厂商简称","投注人数","人均局数","人均金额","投注额(万)","投注额环比","占比","盈亏率(本)","盈亏率(上)"]
+    rows2=[]
+    for i,(_,r) in enumerate(top30.iterrows()):
+        pl=r["盈亏率"]; pc=C_RED if pl<0 else (C_GREEN if pl>4.5 else C_DARK)
+        rows2.append([cell(str(i+1),False,C_GRAY,TA_CENTER),cell(str(r["游戏.名称"])[:18],True),
+                      cell(str(r.get("厂商简称",r["游戏厂商标签.名称"]))[:5]),
+                      cell(f"{int(r['投注人数']):,}",False,C_DARK,TA_RIGHT),
+                      cell(f"{r['人均局数']:.0f}",False,C_DARK,TA_RIGHT),cell(f"${r['人均金额']:.1f}",False,C_DARK,TA_RIGHT),
+                      cell(f"{r['投注金额']/10000:.1f}",False,C_DARK,TA_RIGHT),rc(r.get("投注环比",0)),
+                      cell(f"{r['占比']:.2f}%",False,C_DARK,TA_RIGHT),cell(f"{pl:.2f}%",False,pc,TA_RIGHT),
+                      cell(f"{r.get('lw_盈亏率',0):.2f}%" if not pd.isna(r.get("lw_盈亏率",np.nan)) else "-",False,C_GRAY,TA_RIGHT)])
+    S.append(dtable(h2,rows2,[full*x for x in [0.04,0.18,0.07,0.08,0.06,0.08,0.08,0.08,0.07,0.08,0.08]],fsize=6.5))
+    return S
+
+
+def build_activities(act, tot_gift):
+    full = PW - 2*MARGIN; S = [sec_title("五、活动分析")]
+    S.append(sub_title("各活动赠送效果（全量，含环比）")); S.append(chart_activities(act)); S.append(Spacer(1,4))
+    h=["活动名称","本周赠送","上周赠送","金额环比","本周日均\n赠送人数","上周日均\n赠送人数","人数环比","本周人均\n赠送金额","占比"]
+    rows=[]
+    for _,r in act.iterrows():
+        rows.append([cell(str(r["name_账变opt_id"])[:18],True),cell(f"${r['赠送金额']:,.0f}",False,C_DARK,TA_RIGHT),
+                     cell(f"${r['lw_赠']:,.0f}",False,C_GRAY,TA_RIGHT),
+                     rc(r["环比"] if not pd.isna(r.get("环比",np.nan)) else 0),
+                     cell(f"{r.get('日均_本',0):.0f}",False,C_DARK,TA_RIGHT),
+                     cell(f"{r.get('日均_上',0):.0f}",False,C_GRAY,TA_RIGHT),
+                     rc(r.get("人数环比",0) if not pd.isna(r.get("人数环比",np.nan)) else 0),
+                     cell(f"${r.get('人均',0):.2f}",False,C_DARK,TA_RIGHT),
+                     cell(f"{r['占比']:.1f}%",False,C_DARK,TA_RIGHT)])
+    S.append(dtable(h,rows,[full*x for x in [0.20,0.11,0.11,0.07,0.12,0.12,0.07,0.11,0.09]],fsize=6.5))
+    S.append(Spacer(1,4)); daily=tot_gift/7/10000
+    S.append(P(f"本周总赠送金额：${tot_gift/10000:.2f}万 | 日均赠送：${daily:.2f}万",9,True,C_DARK)); S.append(Spacer(1,6))
+    S.append(insight_box([f"各类赠送活动全量列出（共{len(act)}个），合计本周日均赠送{daily:.1f}万USD。"]))
+    return S
+
+
+def build_tools(tool, fdr):
+    full = PW - 2*MARGIN; S = [sec_title("六、道具专题分析", clr=C_TEAL)]
+    S.append(sub_title("6.1 道具发放、使用及使用率（本周发放≥100）"))
+    S.append(chart_tool_usage(tool)); S.append(Spacer(1,4))
+    td=tool[tool["本周发放"]>=100].copy()
+    h=["道具ID","活动类型","备注说明","本周发放","上周发放","发放环比","本周使用","上周使用","使用环比","本周\n使用率","上周\n使用率"]
+    rows=[]
+    for _,r in td.iterrows():
+        di=r.get("发放环比",0) if not pd.isna(r.get("发放环比",np.nan)) else 0
+        du=r.get("使用环比",0) if not pd.isna(r.get("使用环比",np.nan)) else 0
+        tw_rt=r.get("本周使用率",0) or 0; lw_rt=r.get("上周使用率",0) or 0
+        rows.append([cell(str(r["道具ID"]),False,C_GRAY,TA_CENTER),cell(str(r.get("活动",""))[:10],False,C_PURPLE),
+                     cell(str(r.get("备注",""))[:14],False,C_DARK),
+                     cell(f"{int(r['本周发放']):,}" if r['本周发放']>0 else "-",False,C_DARK,TA_RIGHT),
+                     cell(f"{int(r['上周发放']):,}" if r['上周发放']>0 else "-",False,C_GRAY,TA_RIGHT),rc(di),
+                     cell(f"{int(r['本周使用']):,}" if r['本周使用']>0 else "-",False,C_DARK,TA_RIGHT),
+                     cell(f"{int(r['上周使用']):,}" if r['上周使用']>0 else "-",False,C_GRAY,TA_RIGHT),rc(du),
+                     cell(f"{tw_rt:.1f}%",False,C_GREEN if tw_rt>=lw_rt else C_RED,TA_RIGHT),
+                     cell(f"{lw_rt:.1f}%",False,C_GRAY,TA_RIGHT)])
+    S.append(dtable(h,rows,[full*x for x in [0.07,0.10,0.14,0.08,0.08,0.07,0.08,0.08,0.07,0.07,0.08]],fsize=6.3))
+    S.append(Spacer(1,4))
+    bv=tool[tool["本周发放"]>=100].copy()
+    def _lbl(r):
+        a=str(r.get("活动","")); n=str(r.get("备注",""))
+        return f"{n}({r['本周使用率']:.0f}%)" if a=="其他" else f"[{a}]{n}({r['本周使用率']:.0f}%)"
+    if len(bv)>=3:
+        hi="、".join([_lbl(r) for _,r in bv.nlargest(3,"本周使用率").iterrows()])
+        lo="、".join([_lbl(r) for _,r in bv.nsmallest(3,"本周使用率").iterrows()])
+    else: hi=lo="-"
+    tw_t=int(tool["本周发放"].sum()); lw_t=tool["上周发放"].sum()
+    S.append(insight_box([f"使用率最高3类：{hi}。", f"使用率最低3类：{lo}。",
+                          f"本周总道具发放{tw_t:,}，较上周{lw_t:,.0f}，环比{pct(tw_t,lw_t):+.1f}%。"]))
+    S.append(Spacer(1,8))
+
+    S.append(sub_title("6.2 首次充值活动用户 充值留存分析（重点）"))
+    stage=fdr.get("stage",pd.DataFrame())
+    if len(stage)>0:
+        lws=LAST_WEEK[0]
+        S.append(P(f"▸ 两周阶段汇总（{lws[:4]}.{lws[4:6]}.{lws[6:]} - {THIS_WEEK[1][:4]}.{THIS_WEEK[1][4:6]}.{THIS_WEEK[1][6:]}）",9,True,C_DARK)); S.append(Spacer(1,3))
+        sr=stage[stage["指标"]=="留存率"]; sn=stage[stage["指标"]=="留存人数"]; sa=stage[stage["指标"]=="人均充值金额"]
+        if len(sr)>0:
+            u=int(sn["账变事件用户数"].values[0]) if len(sn)>0 else 0
+            S.append(P(f"首充活动用户总数：{u:,}人",8.5,False,C_DARK))
+            dc=["当日","1日","2日","3日","4日","5日","6日","7日"]; srows=[]
+            if len(sr)>0: srows.append(["留存率"]+[str(sr.iloc[0].get(c,"-")) for c in dc])
+            if len(sn)>0: srows.append(["留存人数"]+[str(sn.iloc[0].get(c,"-")) for c in dc])
+            if len(sa)>0: srows.append(["人均充值($)"]+[str(sa.iloc[0].get(c,"-")) for c in dc])
+            if srows:
+                tr2=[[cell(row[0],True,C_DARK)]+[cell(str(v),False,C_DARK,TA_CENTER) for v in row[1:]] for row in srows]
+                S.append(dtable(["指标"]+dc,tr2,[full*.12]+[full*.11]*8,fsize=6.8))
+        S.append(Spacer(1,6))
+    S.append(P("▸ 本周 vs 上周 首充活动用户留存趋势",9,True,C_DARK)); S.append(Spacer(1,3))
+    S.append(chart_first_dep_ret(fdr)); S.append(Spacer(1,4))
+    tw_u=fdr.get("tw_users",0); lw_u=fdr.get("lw_users",0)
+    tw_pf=fdr.get("tw_platform_fc",0); lw_pf=fdr.get("lw_platform_fc",0)
+    tw_r=tw_u/tw_pf*100 if tw_pf>0 else 0; lw_r=lw_u/lw_pf*100 if lw_pf>0 else 0
+    tv=[fdr.get(f"tw_{d}日",np.nan) for d in ["1","2","3","4","5","6","7"]]
+    lv=[fdr.get(f"lw_{d}日",np.nan) for d in ["1","2","3","4","5","6","7"]]
+    def _fr(v): return f"{v:.1f}%" if not (v is None or (isinstance(v,float) and np.isnan(v))) else "-"
+    rh=["周次","活动用户数","平台首充\n人数","活动用户\n占比","D1留存","D2留存","D3留存","D4留存","D5留存","D6留存","D7留存"]
+    rrows=[
+        [cell(f"本周 {THIS_WEEK[0][4:6]}/{THIS_WEEK[0][6:]}-{THIS_WEEK[1][4:6]}/{THIS_WEEK[1][6:]}",True,C_BLUE),
+         cell(f"{tw_u:,}",False,C_DARK,TA_RIGHT),cell(f"{tw_pf:,}",False,C_GRAY,TA_RIGHT),
+         cell(f"{tw_r:.1f}%",False,C_PURPLE,TA_RIGHT),
+        ]+[cell(_fr(v),False,C_GREEN if not pd.isna(v) and not pd.isna(lval) and v>=lval else(C_RED if not pd.isna(v) and not pd.isna(lval) and v<lval else C_DARK),TA_RIGHT) for v,lval in zip(tv,lv)],
+        [cell(f"上周 {LAST_WEEK[0][4:6]}/{LAST_WEEK[0][6:]}-{LAST_WEEK[1][4:6]}/{LAST_WEEK[1][6:]}",True,C_GRAY),
+         cell(f"{lw_u:,}",False,C_GRAY,TA_RIGHT),cell(f"{lw_pf:,}",False,C_GRAY,TA_RIGHT),
+         cell(f"{lw_r:.1f}%",False,C_GRAY,TA_RIGHT),
+        ]+[cell(_fr(v),False,C_GRAY,TA_RIGHT) for v in lv],
+    ]
+    S.append(dtable(rh,rrows,[full*.16,full*.09,full*.09,full*.08]+[full*.084]*7,fsize=7,zebra=False)); S.append(Spacer(1,4))
+    tw_d1=fdr.get("tw_1日",np.nan); lw_d1=fdr.get("lw_1日",np.nan); ins=[]
+    if not np.isnan(tw_d1) and not np.isnan(lw_d1):
+        d=tw_d1-lw_d1; ins.append(f"首充活动用户次日留存{tw_d1:.1f}%（上周{lw_d1:.1f}%，{d:+.1f}pp），{'留存改善' if d>0 else '留存下降，建议优化次日触达策略'}。")
+    ins.append(f"本周活动用户{tw_u:,}人，占平台首充{tw_r:.1f}%（上周{lw_u:,}/{lw_r:.1f}%）；人均赠送$3.89，属高价值用户来源。")
+    ins.append("建议：对D1/D2留存用户设置阶梯式再充值道具激励；对D3后流失用户做专项召回（24h内触达效果最佳）。")
+    S.append(insight_box(ins, clr=C_AMBER))
+    return S
+
+
+def build_risk(hr, c207_dt, c207, sp, top20g, rg, top500, dt_full):
+    full = PW - 2*MARGIN; S = [sec_title("七、用户游戏风险专项分析", clr=colors.HexColor("#7c2d12"))]
+    tot_tx=top500["提款金额"].sum(); tot_win=top500["公司输赢"].sum(); wns=(top500["公司输赢"]<0).sum()
+    S.append(sub_title("Top500提款用户总览"))
+    row_k=[]
+    for label,val,sub in [("Top500提款总额",f"${tot_tx/10000:.1f}万",""),
+                           ("平台净赔付",f"${abs(tot_win)/10000:.1f}万","平台向该群体净赔"),
+                           ("赢家比例",f"{wns/500*100:.1f}%",f"{wns}赢/{500-wns}输"),
+                           ("高风险用户",f"{len(hr)}人","公司净输>$10,000")]:
+        fw=full/4-4
+        row_k.append(Table([[P(label,7.5,False,C_GRAY)],[P(val,15,True,C_DARK)],[P(sub,7,False,C_GRAY)]],
+                           colWidths=[fw],style=TableStyle([("BACKGROUND",(0,0),(-1,-1),C_LGRAY),("BOX",(0,0),(-1,-1),0.5,C_BORDER),("LEFTPADDING",(0,0),(-1,-1),8),("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),5)])))
+    t=Table([row_k],colWidths=[full/4]*4,hAlign="LEFT",vAlign="TOP")
+    t.setStyle(TableStyle([("VALIGN",(0,0),(-1,-1),"TOP"),("LEFTPADDING",(0,0),(-1,-1),2),("RIGHTPADDING",(0,0),(-1,-1),2),("TOPPADDING",(0,0),(-1,-1),2),("BOTTOMPADDING",(0,0),(-1,-1),2)])); S.append(t); S.append(Spacer(1,8))
+    S.append(sub_title("用户风险分布（投充比 vs 公司输赢）")); S.append(chart_risk_scatter(top500)); S.append(Spacer(1,6))
+    hl=abs(hr["公司输赢"].sum())/10000 if len(hr)>0 else 0
+    S.append(insight_box([
+        f"Top500提款用户中赢家{wns}人（{wns/500*100:.1f}%），平台净赔付${abs(tot_win)/10000:.1f}万。",
+        f"{len(hr)}名超级赢家（公司净输>$10,000）合计导致平台净输${hl:.1f}万，占整体净赔付{hl/abs(tot_win)*10000*100 if tot_win!=0 else 0:.1f}%。",
+    ]))
+    if len(hr)>0:
+        S.append(sub_title("▶ 高风险用户明细（需立即人工审核）"))
+        h=["账户ID","提款金额","充值金额","公司输赢","投注金额","投充比","每注均额","主玩厂商","主玩游戏","风险标签"]
+        rows=[]
+        for _,r in hr.iterrows():
+            ratio=r.get("投充比",0) if not pd.isna(r.get("投充比",0)) else 0; avg=r.get("每注均额",0) if not pd.isna(r.get("每注均额",0)) else 0
+            tags=[]
+            if r["充值金额"]<5000: tags.append("低充高提")
+            if ratio>50: tags.append("超高投充")
+            if avg>200: tags.append("高额单注")
+            rows.append([cell(str(r["账户ID"]),True),cell(f"${r['提款金额']:,.0f}",False,C_DARK,TA_RIGHT),
+                         cell(f"${r['充值金额']:,.0f}",False,C_RED if r["充值金额"]<5000 else C_DARK,TA_RIGHT),
+                         cell(f"${r['公司输赢']:,.0f}",False,C_RED,TA_RIGHT),cell(f"${r['投注金额']:,.0f}",False,C_DARK,TA_RIGHT),
+                         cell(f"{ratio:.0f}x",False,C_RED if ratio>50 else C_AMBER,TA_RIGHT),cell(f"${avg:.0f}",False,C_RED if avg>200 else C_DARK,TA_RIGHT),
+                         cell(str(r.get("主玩厂商",""))[:8]),cell(str(r.get("主玩游戏",""))[:16]),
+                         cell("+".join(tags) if tags else "超级赢家",True,C_RED)])
+        S.append(dtable(h,rows,[full*x for x in [0.11,0.1,0.1,0.1,0.1,0.07,0.07,0.09,0.15,0.13]],fsize=6.5)); S.append(Spacer(1,6))
+    if len(c207)>0:
+        S.append(Spacer(1,8)); S.append(sub_title("▶ PP Auto-Roulette 1 批量账号预警"))
+        S.append(P(f"集群账户数：{len(c207)}个 | 合计提款：${float(c207_dt['提款金额'].sum())/10000:.1f}万 | 平台净赔：${abs(float(c207_dt['公司输赢'].sum()))/10000:.1f}万",8.5,True,C_DARK)); S.append(Spacer(1,6))
+        ch=["账户ID","提款金额","充值金额","公司输赢","特征"]; cr=[]
+        for _,r in c207_dt.head(10).iterrows():
+            cr.append([cell(str(r["账户ID"]),True),cell(f"${r['提款金额']:,.0f}",False,C_RED,TA_RIGHT),cell(f"${r['充值金额']:,.0f}",False,C_AMBER,TA_RIGHT),cell(f"${r['公司输赢']:,.0f}",False,C_RED,TA_RIGHT),cell("充值$547-548" if 546<float(r["充值金额"])<549 else f"充值${r['充值金额']:.0f}")])
+        if len(c207_dt)>10: cr.append([cell(f"…另{len(c207_dt)-10}个账户（模式相同）",False,C_GRAY),cell(""),cell(""),cell(""),cell("")])
+        S.append(dtable(ch,cr,[full*x for x in [0.22,0.18,0.18,0.18,0.24]])); S.append(Spacer(1,6))
+        S.append(insight_box([
+            f"{len(c207)}个账户充值$547-548，均获活动奖励$270.92，账户ID均以'207'开头，均主玩PP Auto-Roulette 1。",
+            "建议：①冻结账户提款；②审查注册IP/设备指纹；③排查$270.92奖励触发规则；④对Auto-Roulette 1实施单账户赢额上限。",
+        ], clr=C_AMBER))
+    S.append(Spacer(1,8)); S.append(sub_title("Top20提款用户明细（含主玩游戏）"))
+    th=["#","账户ID","提款金额","充值金额","公司输赢","活动奖励","主玩游戏","状态"]; tr=[]
+    for i,(_,r) in enumerate(dt_full.head(20).iterrows()):
+        win=r["公司输赢"]<0
+        tr.append([cell(str(i+1),False,C_GRAY,TA_CENTER),cell(str(r["账户ID"])),
+                   cell(f"${r['提款金额']:,.0f}",False,C_DARK,TA_RIGHT),cell(f"${r['充值金额']:,.0f}",False,C_DARK,TA_RIGHT),
+                   cell(f"${r['公司输赢']:,.0f}",False,C_RED if win else C_GREEN,TA_RIGHT),cell(f"${r['活动奖励']:,.0f}",False,C_DARK,TA_RIGHT),
+                   cell(str(r.get("主玩游戏",""))[:16] if "主玩游戏" in r and not pd.isna(r.get("主玩游戏","")) else "-",False,C_GRAY),
+                   cell("玩家赢" if win else "公司赢",False,C_RED if win else C_GREEN,TA_CENTER)])
+    S.append(dtable(th,tr,[full*x for x in [0.04,0.13,0.11,0.11,0.11,0.09,0.28,0.1]],fsize=6.5)); S.append(Spacer(1,6))
+    pg,ma=load_pref()
+    S.append(sub_title("Top500提款用户游戏偏好")); S.append(chart_pref(pg,ma)); S.append(Spacer(1,4))
+    S.append(sub_title("▶ 高危游戏专项分析")); S.append(chart_risk_games(rg)); S.append(Spacer(1,4))
+    gh=["游戏名称","厂商","玩家数","投注金额","公司输赢","盈亏率","赢家率","人均投注","风险"]; gr=[]
+    for _,r in rg.head(12).iterrows():
+        pl=r["盈亏率"]; rl="极高" if abs(pl)>40 or r["公司输赢"]<-50000 else ("高" if pl<-10 else "关注"); rc2=C_RED if rl in("极高","高") else C_AMBER
+        gr.append([cell(str(r["游戏名称"])[:18],True),cell(str(r["show_name_厂商标签id"])[:8]),
+                   cell(f"{int(r['玩家数'])}",False,C_DARK,TA_RIGHT),cell(f"${r['投注金额']/10000:.1f}万",False,C_DARK,TA_RIGHT),
+                   cell(f"${r['公司输赢']:,.0f}",False,C_RED,TA_RIGHT),cell(f"{pl:.1f}%",False,C_RED,TA_RIGHT),
+                   cell(f"{r['赢家率']:.0f}%",False,C_RED if r["赢家率"]>60 else C_AMBER,TA_RIGHT),
+                   cell(f"${r['人均投注额']:,.0f}",False,C_DARK,TA_RIGHT),cell(rl,True,rc2)])
+    S.append(dtable(gh,gr,[full*x for x in [0.21,0.1,0.07,0.1,0.11,0.08,0.08,0.1,0.07]],fsize=6.5)); S.append(Spacer(1,6))
+    S.append(insight_box(["PP Auto-Roulette 1批量套利模式持续，建议暂停该桌并复核奖励规则。",
+                          "Fortune Garuda 500（Tada）是Top500提款用户投注规模最大游戏，建议对其RTP参数做紧急复审。"], clr=C_RED))
+    return S
+
+
+def build_conclusion(K, agents, dep_t, wdr_t):
+    full = PW - 2*MARGIN; S = [sec_title("八、总结与行动建议")]
+    cr_d=K["tw_充提差比"]-K["lw_充提差比"]; rd=K["tw_首充次日复充率"]-K["lw_首充次日复充率"]
+    S.append(sub_title("▶ 本周亮点")); bg_g=colors.HexColor("#f0fdf4")
+    for h in [
+        _render("充值{v:.1f}万（{p:+.1f}%），充提差{d:.1f}万，充提差率{cr:.2f}%（{dpp:+.2f}pp）。",
+                v=K["tw_充值金额"]/10000,p=K["pct_充值金额"],d=K["tw_充提差"]/10000,cr=K["tw_充提差比"],dpp=cr_d),
+        _render("注册人数{r:,}（{rp:+.1f}%），首充人数{fc:,}（{fcp:+.1f}%），拉新规模扩大。",
+                r=int(K["tw_注册人数"]),rp=K["pct_注册人数"],fc=int(K["tw_首充人数"]),fcp=K["pct_首充人数"]),
+        "A8_DSP充提差率17.6%（+1.3pp），A8_GG 18.9%（+0.3pp），优质渠道持续稳定。",
+    ]:
+        S.append(Table([[P(f"• {h}",8.5,False,C_DARK)]],colWidths=[full],style=TableStyle([("BACKGROUND",(0,0),(-1,-1),bg_g),("LEFTPADDING",(0,0),(-1,-1),12),("TOPPADDING",(0,0),(-1,-1),3),("BOTTOMPADDING",(0,0),(-1,-1),3)])))
+    S.append(Spacer(1,8)); S.append(sub_title("▶ 风险预警")); bg_r=colors.HexColor("#fff5f5")
+    for r in [
+        "PP Auto-Roulette 1盈亏率极低，33个批量账号套利合计导致平台净赔$6.7万，需立即处置。",
+        _render("首充ARPPU${v:.2f}（{p:+.1f}%），首充次日留存{nd:.1f}%（{dp:+.1f}pp），新用户质量需关注。",
+                v=K["tw_首充Arppu"],p=K["pct_首充Arppu"],nd=K["tw_首充次日复充率"],dp=rd),
+        "YB_FB_PWA_0注册量暴跌-79%（1,315人），建议暂停投放并排查异常。",
+    ]:
+        S.append(Table([[P(f"• {r}",8.5,False,C_DARK)]],colWidths=[full],style=TableStyle([("BACKGROUND",(0,0),(-1,-1),bg_r),("LEFTPADDING",(0,0),(-1,-1),12),("TOPPADDING",(0,0),(-1,-1),3),("BOTTOMPADDING",(0,0),(-1,-1),3)])))
+    S.append(Spacer(1,8)); S.append(sub_title("▶ 行动建议"))
+    actions=[
+        ("[紧急]","处置PP Auto-Roulette 1批量套利","33个207开头账户合计提款$9.4万，平台净赔$6.7万。冻结账户，审查IP/设备指纹，修复$270.92奖励触发漏洞，实施赢额上限。"),
+        ("[本周]","处置高风险提款用户","账户49903866：提款$39,636，公司输赢-$52,134；账户206628722：充值$10,229提款$24,855，高度异常。建议立即人工审核。"),
+        ("[本周]","优化首充质量与次日激活",_render("首充ARPPU${v:.2f}（{p:+.1f}%），次日留存{nd:.1f}%（{dp:+.1f}pp）。建议注册后1h/24h内推送首充引导，落地页突出$10+档。",v=K["tw_首充Arppu"],p=K["pct_首充Arppu"],nd=K["tw_首充次日复充率"],dp=rd)),
+    ]
+    pmap={"[紧急]":C_RED,"[本周]":C_AMBER}
+    rows=[[cell(pri,True,pmap.get(pri[:4],C_GRAY),TA_CENTER),cell(title,True,C_DARK),cell(desc,False,C_GRAY)] for pri,title,desc in actions]
+    S.append(dtable(["优先级","建议事项","执行说明与数据依据"],rows,[full*x for x in [0.1,0.22,0.68]]))
+    return S
+
+
+def header_footer(c, doc):
+    c.saveState(); w, h = A4
+    c.setFillColor(colors.HexColor("#0f172a")); c.rect(0,h-26,w,26,fill=1,stroke=0)
+    c.setFillColor(colors.white); c.setFont(FNB,10)
+    c.drawString(MARGIN, h-17, f"MX 平台数据周报  {THIS_WEEK[0][:4]}.{THIS_WEEK[0][4:6]}.{THIS_WEEK[0][6:]} — {THIS_WEEK[1][:4]}.{THIS_WEEK[1][4:6]}.{THIS_WEEK[1][6:]}")
+    c.setFont(FN,8); c.drawRightString(w-MARGIN, h-17, f"对比基准：{LAST_WEEK[0][:4]}.{LAST_WEEK[0][4:6]}.{LAST_WEEK[0][6:]} — {LAST_WEEK[1][:4]}.{LAST_WEEK[1][4:6]}.{LAST_WEEK[1][6:]}")
+    c.setFillColor(colors.HexColor("#f1f5f9")); c.rect(0,0,w,16,fill=1,stroke=0)
+    c.setFillColor(colors.HexColor("#64748b")); c.setFont(FN,7); c.drawRightString(w-MARGIN, 5, f"第 {doc.page} 页")
+    c.restoreState()
+
+
+def main(data_root=None, output_dir=None):
+    root   = Path(data_root)   if data_root   else DATA_ROOT
+    outdir = Path(output_dir)  if output_dir  else OUTPUT_DIR
+    outdir.mkdir(parents=True, exist_ok=True)
+    print("📊 MX 周报 PDF v7.3 生成中...")
+    resolve_files(root); setup()
+    print("  ▶ 加载数据...")
+    K, trend         = load_platform()
+    dash_ret         = load_dashboard_retention()
+    weekly_ret       = load_weekly_retention()
+    agents           = load_agents()
+    agent_ret, ends  = load_agent_ret()
+    tw_v, lw_v       = load_vip()
+    dep_t, wdr_t, dc_tw, dt_top = load_top_users()
+    top30            = load_games()
+    mfr              = load_mfr()
+    mfr_delta        = load_mfr_game_delta()
+    act_df, tot_gift = load_activities()
+    tool_df          = load_tool_data()
+    fdr              = load_first_dep_ret()
+
+    dt_raw = pd.read_csv(FILES["dt_tw"]); dc_raw = pd.read_csv(FILES["dc_tw"])
+    for df in [dt_raw, dc_raw]:
+        for c in ["充值金额","提款金额","公司输赢","活动奖励","投注金额"]:
+            if c in df.columns: df[c] = pd.to_numeric(df[c], errors="coerce")
+    hr, c207_dt, c207, sp, top20g, rg, top500 = load_risk(dt_raw, dc_raw)
+
+    dpf = pd.read_csv(FILES["pref_tw"]); dpf["阶段汇总"] = dpf["阶段汇总"].apply(clean)
+    tg = (dpf[dpf["分析指标"]=="投注金额"].sort_values("阶段汇总",ascending=False)
+          .groupby("账户ID").first()[["show_name_厂商标签id","游戏名称"]]
+          .rename(columns={"show_name_厂商标签id":"主玩厂商","游戏名称":"主玩游戏"}).reset_index())
+    dt_top = dt_top.merge(tg, on="账户ID", how="left")
+
+    print("  ▶ 导出风控Excel...")
+    excel_out = outdir / f"MX_风控名单_{THIS_WEEK[0]}-{THIS_WEEK[1]}.xlsx"
+    with pd.ExcelWriter(str(excel_out), engine="openpyxl") as xw:
+        cols_hr = ["账户ID","提款金额","充值金额","公司输赢","投注金额","活动奖励","主玩厂商","主玩游戏","每注均额","投充比"]
+        hr[[c for c in cols_hr if c in hr.columns]].to_excel(xw, sheet_name="高风险用户", index=False)
+        if len(c207_dt)>0: c207_dt[["账户ID","提款金额","充值金额","公司输赢","活动奖励"]].to_excel(xw, sheet_name="PP轮盘批量账号", index=False)
+        if len(sp)>0:     sp[["账户ID","提款金额","充值金额","投注金额","公司输赢","投充比"]].to_excel(xw, sheet_name="特殊异常用户", index=False)
+        tool_df.to_excel(xw, sheet_name="道具使用情况", index=False)
+    print(f"✅ 风控Excel: {excel_out}")
+
+    print("  ▶ 构建PDF章节...")
+    out = outdir / f"MX周报_{THIS_WEEK[0]}-{THIS_WEEK[1]}.pdf"
+    doc = SimpleDocTemplate(str(out), pagesize=A4, leftMargin=MARGIN, rightMargin=MARGIN,
+                            topMargin=MARGIN+22, bottomMargin=MARGIN+10,
+                            title=f"MX平台周报 {THIS_WEEK[0]}-{THIS_WEEK[1]}")
+    story = [Spacer(1,3*cm),
+             P("MX 平台数据周报", 30, True, C_DARK, TA_CENTER), Spacer(1,.5*cm),
+             P(f"统计周期：{THIS_WEEK[0][:4]}.{THIS_WEEK[0][4:6]}.{THIS_WEEK[0][6:]} — {THIS_WEEK[1][:4]}.{THIS_WEEK[1][4:6]}.{THIS_WEEK[1][6:]}",14,False,C_GRAY,TA_CENTER),
+             Spacer(1,.2*cm),
+             P(f"对比基准：{LAST_WEEK[0][:4]}.{LAST_WEEK[0][4:6]}.{LAST_WEEK[0][6:]} — {LAST_WEEK[1][:4]}.{LAST_WEEK[1][4:6]}.{LAST_WEEK[1][6:]}",12,False,C_GRAY,TA_CENTER),
+             Spacer(1,.5*cm), HRFlowable(width="50%",thickness=2,color=C_BLUE,hAlign="CENTER"), PageBreak()]
+    story += build_overview(K, trend, weekly_ret, dash_ret);              story.append(PageBreak())
+    story += build_agents(agents, agent_ret, ends);                       story.append(PageBreak())
+    story += build_users(tw_v, lw_v, dep_t, wdr_t, dc_tw, dt_top);       story.append(PageBreak())
+    story += build_games(mfr, top30, mfr_delta);                          story.append(PageBreak())
+    story += build_activities(act_df, tot_gift);                          story.append(PageBreak())
+    story += build_tools(tool_df, fdr);                                   story.append(PageBreak())
+    story += build_risk(hr, c207_dt, c207, sp, top20g, rg, top500, dt_top); story.append(PageBreak())
+    story += build_conclusion(K, agents, dep_t, wdr_t)
+    print("  ▶ 渲染PDF...")
+    doc.build(story, onFirstPage=header_footer, onLaterPages=header_footer)
+    size = out.stat().st_size / 1024
+    print(f"\n✅ PDF完成：{out}  ({size:.0f} KB)")
+    return str(out), str(excel_out)
+
+
+if __name__ == "__main__":
+    if sys.platform != "win32":
+        main(data_root="/mnt/user-data/uploads", output_dir="/mnt/user-data/outputs")
+    else:
+        main(data_root=str(DATA_ROOT), output_dir=str(OUTPUT_DIR))
